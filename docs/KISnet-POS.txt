@@ -1,0 +1,60 @@
+KISnet-POS 
+Worklfow
+Opens to Home, employee logs/clocks in
+Employee Loads to job specific page
+Host/Bar creates party
+Server/Bartender selects table and can place/edit order
+Kitchen receives order
+
+Admin
+Loads to Command Center Screen
+All privelages
+Drop down menu to the left to change between screens
+Shows all employees on the clock
+
+Home
+-Default login screen
+-clock in/out option below login 
+-on clock in, logs into station
+Host Screen
+-4x4 squares grid A-D/1-4
+-Create Party= Table+ Assign Server + Party Name + Party Size
+-Create Party starts order time
+
+
+Server Screen  
+-Server has a drop down of assigned tables from Host screen
+-Create order exports to bar and kitchen
+
+Bar Screen
+-Create Order exports to Bar and Kitchen
+-10 circles labeled Z1-Z10
+
+Kitchen Screen
+-3 track primary screen with Appetizers, Hot, and Cold tracks.  Each order should show running time and table number
+
+Database
+-Food items in backend recipe in CSV form.  Assign each item to a category: Bar(drinks), Appetizers, Hot, Cold
+ex.
+
+Name-Ceasar Salad
+Type-Cold
+Item-8 oz Romaine Lettuce
+      4 oz Ceasar Dressing
+      2 oz Parm
+Sales-$10
+
+*Use real generic recipes to populate MVP*
+
+-Imports completed orders to Create reports Daily Sales, Food Usage
+-store usages of all items by each name, type, item, and sales
+-should add up all items sold, by item, for food usage report
+
+Created Employees
+Make fake employees with generic m or f names
+employees should be numbered 01, 02, 03 for backend tracking(doesn't display on front end screens)
+ex.:
+Host-HOST1
+Server-SRV1
+Kitchen-KIT1
+Bartender-BAR1

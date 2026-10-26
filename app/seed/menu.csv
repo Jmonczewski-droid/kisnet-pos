@@ -1,0 +1,35 @@
+name,type,ingredient,qty,unit,sales
+Caesar Salad,Cold,Romaine Lettuce,8,oz,10.00
+Caesar Salad,Cold,Caesar Dressing,4,oz,10.00
+Caesar Salad,Cold,Parmesan,2,oz,10.00
+Garden Salad,Cold,Mixed Greens,6,oz,8.00
+Garden Salad,Cold,Cherry Tomato,2,oz,8.00
+Garden Salad,Cold,Ranch Dressing,2,oz,8.00
+Mozzarella Sticks,Appetizers,Mozzarella Cheese,4,oz,9.00
+Mozzarella Sticks,Appetizers,Breadcrumbs,2,oz,9.00
+Mozzarella Sticks,Appetizers,Marinara Sauce,3,oz,9.00
+Chicken Wings,Appetizers,Chicken Wings,10,oz,12.00
+Chicken Wings,Appetizers,Buffalo Sauce,2,oz,12.00
+Chicken Wings,Appetizers,Butter,1,oz,12.00
+Garlic Bread,Appetizers,Baguette,4,oz,6.00
+Garlic Bread,Appetizers,Garlic Butter,2,oz,6.00
+Burger,Hot,Ground Beef,6,oz,14.00
+Burger,Hot,Brioche Bun,1,each,14.00
+Burger,Hot,Cheddar Cheese,1,oz,14.00
+Burger,Hot,Lettuce,1,oz,14.00
+Burger,Hot,Tomato,2,oz,14.00
+Burger,Hot,Onion,1,oz,14.00
+Grilled Chicken Sandwich,Hot,Chicken Breast,6,oz,13.00
+Grilled Chicken Sandwich,Hot,Brioche Bun,1,each,13.00
+Grilled Chicken Sandwich,Hot,Swiss Cheese,1,oz,13.00
+Grilled Chicken Sandwich,Hot,Lettuce,1,oz,13.00
+Spaghetti Marinara,Hot,Spaghetti,6,oz,13.00
+Spaghetti Marinara,Hot,Marinara Sauce,4,oz,13.00
+Spaghetti Marinara,Hot,Parmesan,1,oz,13.00
+Fish and Chips,Hot,Cod Fillet,6,oz,16.00
+Fish and Chips,Hot,Batter,2,oz,16.00
+Fish and Chips,Hot,French Fries,8,oz,16.00
+Beer,Bar,Draft Beer,16,oz,6.00
+House Red Wine,Bar,Red Wine,6,oz,9.00
+Iced Tea,Bar,Iced Tea,16,oz,3.00
+Soda,Bar,Soda,12,oz,3.00

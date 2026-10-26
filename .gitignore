@@ -1,0 +1,71 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  * https://github.com/pyinstaller/pyinstaller/issues/1928
+#  * https://github.com/pyinstaller/pyinstaller/wikitree/Frequently-Asked-Questions#how-to-make-exe-without-console-output
+#  * https://pyinstaller.readthedocs.io/en/latest/usage.html#cmdoption-h
+*.spec
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Database
+app.db
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Test coverage
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# Local configuration
+config.local.py
+
+# Temporary files
+*.tmp
+*.temp
