@@ -74,12 +74,8 @@ function expireSession() {
     localStorage.removeItem('kisnet.token');
     state.employee = null;
     state.token = null;
-    clearKitchenInterval();
+    stopScreenTimers();
     renderMenu();
-    if (window.KIS && window.KIS.commandInterval) {
-        clearInterval(window.KIS.commandInterval);
-        window.KIS.commandInterval = null;
-    }
     go('#/login');
 }
 
@@ -1340,6 +1336,7 @@ function updateScreen() {
     if (!root) return;
 
     closeModal();
+    stopScreenTimers();
     root.innerHTML = '';
     document.querySelectorAll('.top-bar').forEach(bar => bar.remove());
     renderMenu();
@@ -1384,13 +1381,6 @@ function updateScreen() {
         go('/login');
         return;
     }
-    if (path !== '/kitchen') {
-        clearKitchenInterval();
-    }
-    if (path !== '/command' && window.KIS && window.KIS.commandInterval) {
-        clearInterval(window.KIS.commandInterval);
-        window.KIS.commandInterval = null;
-    }
     SCREENS[path](mainContent);
 }
 
@@ -1425,6 +1415,15 @@ window.KIS = {
 };
 
 // Clear intervals when leaving kitchen screen
+// Stop every screen's refresh timer (kitchen tickets, command center)
+function stopScreenTimers() {
+    clearKitchenInterval();
+    if (window.KIS && window.KIS.commandInterval) {
+        clearInterval(window.KIS.commandInterval);
+        window.KIS.commandInterval = null;
+    }
+}
+
 function clearKitchenInterval() {
     if (window.KIS && window.KIS.kitchenInterval) {
         clearInterval(window.KIS.kitchenInterval);
