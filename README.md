@@ -43,7 +43,10 @@ scenario from the requirements (A11) through the HTTP API.
 ## Decisions on the open points (requirements A10)
 
 1. **On the clock:** clocking in is the login. Each login opens a time entry; clocking out (from a station or
-   by the admin in Command Center) closes it. A second clock-in while on the clock returns 409.
+   by the admin in Command Center) closes it. Logging in again as the same person replaces the open entry and
+   invalidates the old token, so a lost browser session can sign straight back in.
+   After 5 minutes with no input the page signs out and returns to login; signing in again opens the same page.
+   The employee stays on the clock until they clock out or are cleared by an admin.
 2. **Completing an order:** the server (or bartender for bar seats, or admin) marks it complete on their screen.
 3. **Kitchen finish:** Bump clears a whole ticket (one order, one track) at once.
 4. **Clearing a table:** the host (or bartender for Z seats, or admin) closes the party once its order is complete.

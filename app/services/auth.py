@@ -30,11 +30,9 @@ def clock_in(session: Session, code: str, pin: str) -> Tuple[Employee, str]:
     if not verify_pin(pin, employee.pin_hash):
         raise AuthError(status.HTTP_401_UNAUTHORIZED, "Invalid code or PIN")
 
-    # Check if employee is already clocked in
-    existing_entry = session.query(TimeEntry).filter_by(employee_id=employee.id, clocked_out_at=None).first()
-    
-    if existing_entry:
-        raise AuthError(status.HTTP_409_CONFLICT, "Employee already clocked in")
+    # Logging in again replaces an open entry (e.g. the browser lost its token). The old token stops working.
+    for existing_entry in session.query(TimeEntry).filter_by(employee_id=employee.id, clocked_out_at=None).all():
+        existing_entry.clocked_out_at = utcnow()
 
     # Create new token and time entry
     token = new_token()

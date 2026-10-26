@@ -52,15 +52,18 @@ def test_clock_in_unknown_code(auth_client, db):
     assert response.json()["detail"] == "Invalid code or PIN"
 
 
-def test_clock_in_second_clock_in_while_on_clock(auth_client, db):
-    # First clock in
-    response = auth_client.post("/api/v1/auth/clock-in", json={"code": "SRV1", "pin": "1234"})
-    assert response.status_code == 200
-    
-    # Try to clock in again with same employee
-    response = auth_client.post("/api/v1/auth/clock-in", json={"code": "SRV1", "pin": "1234"})
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Employee already clocked in"
+def test_clock_in_again_replaces_open_entry(auth_client, db):
+    first = auth_client.post("/api/v1/auth/clock-in", json={"code": "SRV1", "pin": "1234"})
+    assert first.status_code == 200
+    old_token = first.json()["token"]
+
+    second = auth_client.post("/api/v1/auth/clock-in", json={"code": "SRV1", "pin": "1234"})
+    assert second.status_code == 200
+    new_token = second.json()["token"]
+    assert new_token != old_token
+
+    assert auth_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {old_token}"}).status_code == 401
+    assert auth_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {new_token}"}).status_code == 200
 
 
 def test_me_with_token(auth_client, db):

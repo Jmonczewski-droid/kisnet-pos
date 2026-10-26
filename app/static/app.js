@@ -18,6 +18,9 @@ function api(path, opts = {}) {
     return fetch(url, options)
         .then(response => {
             if (!response.ok) {
+                if (response.status === 401 && token && !path.includes('/auth/clock-in')) {
+                    expireSession();
+                }
                 return response.json().then(err => {
                     throw new Error(err.detail || `HTTP error! status: ${response.status}`);
                 });
@@ -35,6 +38,44 @@ const state = {
 // Hash-based router
 function go(path) {
     window.location.hash = path;
+}
+
+// Go to a path; if the hash is already there, the browser fires no hashchange, so render directly
+function goTo(path) {
+    if (window.location.hash.slice(1) === path) {
+        updateScreen();
+    } else {
+        go(path);
+    }
+}
+
+// Home screen for each role (admin can open any screen)
+function stationFor(role) {
+    return { admin: '/command', host: '/host', server: '/server', bartender: '/bar', kitchen: '/kitchen' }[role];
+}
+
+function canVisit(role, path) {
+    return role === 'admin' ? path in SCREENS : path === stationFor(role);
+}
+
+// Idle sign-out: after this long with no input, return to login and resume the same page after signing in
+const IDLE_LIMIT_MS = 5 * 60 * 1000;
+let lastActivity = Date.now();
+
+function expireSession() {
+    const current = window.location.hash;
+    if (current && current !== '#/login') {
+        localStorage.setItem('kisnet.returnTo', current);
+    }
+    localStorage.removeItem('kisnet.token');
+    state.employee = null;
+    state.token = null;
+    clearKitchenInterval();
+    if (window.KIS && window.KIS.commandInterval) {
+        clearInterval(window.KIS.commandInterval);
+        window.KIS.commandInterval = null;
+    }
+    go('#/login');
 }
 
 // Format date helper
@@ -356,26 +397,11 @@ function handleLogin() {
         state.token = data.token;
         state.employee = data.employee;
         
-        // Route based on role
-        switch (data.employee.role) {
-            case 'admin':
-                go('#/command');
-                break;
-            case 'host':
-                go('#/host');
-                break;
-            case 'server':
-                go('#/server');
-                break;
-            case 'bartender':
-                go('#/bar');
-                break;
-            case 'kitchen':
-                go('#/kitchen');
-                break;
-            default:
-                go('#/login');
-        }
+        // Return to the page the user was on before sign-out, if their role may see it
+        const returnTo = localStorage.getItem('kisnet.returnTo');
+        localStorage.removeItem('kisnet.returnTo');
+        const role = data.employee.role;
+        goTo(returnTo && canVisit(role, returnTo.slice(1)) ? returnTo.slice(1) : stationFor(role));
     })
     .catch(error => {
         alert('Login failed: ' + error.message);
@@ -957,6 +983,7 @@ const SCREENS = {
 
 // Clock out function
 function clockOut() {
+    localStorage.removeItem('kisnet.returnTo');
     api('/auth/clock-out', { method: 'POST' })
         .then(() => {
             // Clear local storage and state
@@ -1111,7 +1138,8 @@ function updateScreen() {
                     .then(data => {
                         state.employee = data;
                         state.token = token;
-                        go('#/command');  // Default route for authenticated user
+                        const current = window.location.hash.slice(1);
+                        goTo(current && canVisit(data.role, current) ? current : stationFor(data.role));
                     })
                     .catch(() => {
                         // Invalid token, remove and show login
@@ -1130,6 +1158,15 @@ function updateScreen() {
 function init() {
     // Listen for hash changes
     window.addEventListener('hashchange', updateScreen);
+
+    // Any input counts as activity; check for idleness every 15 seconds
+    ['pointerdown', 'keydown', 'mousemove', 'touchstart', 'input', 'scroll'].forEach(type =>
+        document.addEventListener(type, () => { lastActivity = Date.now(); }, { passive: true }));
+    setInterval(() => {
+        if (localStorage.getItem('kisnet.token') && Date.now() - lastActivity > IDLE_LIMIT_MS) {
+            expireSession();
+        }
+    }, 15000);
     
     // Initial screen load
     updateScreen();
