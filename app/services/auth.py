@@ -16,39 +16,51 @@ class AuthError(Exception):
         super().__init__(detail)
 
 
-def clock_in(session: Session, code: str, pin: str) -> Tuple[Employee, str]:
-    # Find employee by code
+def check_pin(session: Session, code: str, pin: str) -> Employee:
+    """Return the active employee for code+PIN, or raise AuthError. Has no side effects."""
     employee = session.query(Employee).filter_by(code=code).first()
-    
+
     if not employee:
         raise AuthError(status.HTTP_401_UNAUTHORIZED, "Invalid code or PIN")
-        
+
     if not employee.active:
         raise AuthError(status.HTTP_401_UNAUTHORIZED, "Employee is inactive")
 
-    # Verify PIN
     if not verify_pin(pin, employee.pin_hash):
         raise AuthError(status.HTTP_401_UNAUTHORIZED, "Invalid code or PIN")
 
-    # Logging in again replaces an open entry (e.g. the browser lost its token). The old token stops working.
-    for existing_entry in session.query(TimeEntry).filter_by(employee_id=employee.id, clocked_out_at=None).all():
-        existing_entry.clocked_out_at = utcnow()
+    return employee
 
-    # Create new token and time entry
+
+def preview_clock_in(session: Session, code: str, pin: str) -> dict:
+    """Who is signing in, and whether they are already on the clock (for the confirmation pop-up)."""
+    employee = check_pin(session, code, pin)
+    entry = open_entry_for(session, employee.id)
+    return {"employee": employee, "on_clock": entry is not None, "clocked_in_at": entry.clocked_in_at if entry else None}
+
+
+def clock_in(session: Session, code: str, pin: str) -> Tuple[Employee, str]:
+    """Clock in (or sign back in if already on the clock). A new token is issued either way."""
+    employee = check_pin(session, code, pin)
+
     token = new_token()
-    token_hash = hash_token(token)
-    
-    time_entry = TimeEntry(
-        employee_id=employee.id,
-        clocked_in_at=utcnow(),
-        token_hash=token_hash
-    )
-    
-    session.add(time_entry)
+    entry = open_entry_for(session, employee.id)
+    if entry:
+        # Already on the clock: keep the original clock-in time, replace the token
+        entry.token_hash = hash_token(token)
+    else:
+        session.add(TimeEntry(employee_id=employee.id, clocked_in_at=utcnow(), token_hash=hash_token(token)))
+
     session.commit()
-    session.refresh(time_entry)
-    
     return employee, token
+
+
+def logout(session: Session, employee: Employee) -> None:
+    """End this session but leave the employee on the clock."""
+    entry = open_entry_for(session, employee.id)
+    if entry:
+        entry.token_hash = None
+        session.commit()
 
 
 def clock_out(session: Session, employee: Employee) -> None:

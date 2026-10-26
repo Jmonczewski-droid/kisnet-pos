@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from app.db.base import get_db
 from app.schemas.auth import ClockInIn, EmployeeOut, TokenOut, ClockedOutOut
-from app.services.auth import clock_in, clock_out, AuthError, get_employee_by_token
+from app.services.auth import clock_in, clock_out, logout, preview_clock_in, AuthError, get_employee_by_token
+from app.core.time import utcnow
+from app.api.deps import get_current_employee
 from app.models.employee import Employee
 from app.models.time_entry import TimeEntry
 
@@ -16,6 +18,28 @@ def clock_in_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
         return TokenOut(token=token, employee=EmployeeOut.model_validate(employee))
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/preview")
+def preview_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
+    """Check code and PIN and report whether the person is already on the clock. Changes nothing."""
+    try:
+        info = preview_clock_in(db, clock_in_data.code, clock_in_data.pin)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "employee": EmployeeOut.model_validate(info["employee"]),
+        "on_clock": info["on_clock"],
+        "clocked_in_at": info["clocked_in_at"],
+        "now": utcnow(),
+    }
+
+
+@router.post("/logout")
+def logout_endpoint(employee: Employee = Depends(get_current_employee), db: Session = Depends(get_db)):
+    """End the session. The employee stays on the clock until they clock out from the Time Card."""
+    logout(db, employee)
+    return {"logged_out": True}
 
 
 @router.post("/clock-out")

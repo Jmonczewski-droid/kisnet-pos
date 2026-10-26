@@ -131,13 +131,25 @@ def test_ticket_access_for_host_server_role():
 # The below tests would require a more complex test structure to work properly with actual DB interactions.
 # This test is for demonstrating what should work, but won't be run until we have proper DB state.
 
-def test_list_tickets_returns_empty_when_no_orders():
-    """Test that list_tickets returns empty result when there are no appropriate open orders"""
-    # This test is conceptual - the actual test would require working DB and properly created orders
-    pass
+def test_list_tickets_returns_empty_when_no_orders(db, login):
+    """With no open orders, list_tickets returns an empty list."""
+    from app.models.employee import Employee
+    from app.services.tickets import list_tickets
+
+    admin = db.query(Employee).filter_by(code="ADM1").one()
+    assert list_tickets(db, admin, "hot") == []
 
 
-def test_bump_ticket_404_on_nonexistent_order():
-    """Test bumping a non-existent order should return 404"""
-    # We're not testing actual order bumps here due to complexity of setup  
-    pass
+def test_bump_ticket_404_on_nonexistent_order(db):
+    """Bumping an order that does not exist raises 404."""
+    import pytest
+    from fastapi import HTTPException
+    from app.models.employee import Employee
+    from app.services.tickets import bump_ticket
+
+    admin = db.query(Employee).filter_by(code="ADM1").one()
+    with pytest.raises(HTTPException) as error:
+        bump_ticket(db, admin, 999999, "hot")
+    assert error.value.status_code == 404
+
+

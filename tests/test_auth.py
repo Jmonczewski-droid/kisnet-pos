@@ -113,3 +113,42 @@ def test_clock_out_again_after_new_login(auth_client, db):
     response = auth_client.post("/api/v1/auth/clock-in", json={"code": "SRV1", "pin": "1234"})
     assert response.status_code == 200
     assert "token" in response.json()
+
+def test_preview_reports_clock_state_without_changing_it(auth_client, db):
+    from app.models import TimeEntry
+
+    response = auth_client.post("/api/v1/auth/preview", json={"code": "BAR1", "pin": "1234"})
+    assert response.status_code == 200
+    assert response.json()["on_clock"] is False
+    assert response.json()["employee"]["name"] == "Jessica Moore"
+    assert db.query(TimeEntry).count() == 0
+
+    auth_client.post("/api/v1/auth/clock-in", json={"code": "BAR1", "pin": "1234"})
+    response = auth_client.post("/api/v1/auth/preview", json={"code": "BAR1", "pin": "1234"})
+    assert response.json()["on_clock"] is True
+
+
+def test_logout_keeps_employee_on_the_clock(auth_client, db):
+    from app.models import TimeEntry
+
+    token = auth_client.post("/api/v1/auth/clock-in", json={"code": "KIT1", "pin": "1234"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert auth_client.post("/api/v1/auth/logout", headers=headers).status_code == 200
+    assert auth_client.get("/api/v1/auth/me", headers=headers).status_code == 401
+    open_entries = db.query(TimeEntry).filter(TimeEntry.clocked_out_at == None).all()  # noqa: E711
+    assert len(open_entries) == 1
+
+
+def test_sign_in_again_keeps_original_clock_in_time(auth_client, db):
+    from app.models import TimeEntry
+
+    auth_client.post("/api/v1/auth/clock-in", json={"code": "KIT1", "pin": "1234"})
+    original = db.query(TimeEntry).one().clocked_in_at
+
+    auth_client.post("/api/v1/auth/clock-in", json={"code": "KIT1", "pin": "1234"})
+    db.expire_all()
+
+    entries = db.query(TimeEntry).all()
+    assert len(entries) == 1
+    assert entries[0].clocked_in_at == original

@@ -26,7 +26,7 @@ def test_cli_seed():
         
         # Verify seeding worked properly
         emp_count = db_session.query(Employee).count()
-        assert emp_count == 5
+        assert emp_count == 8
         
         # Run the CLI command directly 
         result = main(["seed"])

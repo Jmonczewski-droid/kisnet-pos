@@ -63,6 +63,10 @@ const IDLE_LIMIT_MS = 5 * 60 * 1000;
 let lastActivity = Date.now();
 
 function expireSession() {
+    const token = localStorage.getItem('kisnet.token');
+    if (token) {
+        fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+    }
     const current = window.location.hash;
     if (current && current !== '#/login') {
         localStorage.setItem('kisnet.returnTo', current);
@@ -71,6 +75,7 @@ function expireSession() {
     state.employee = null;
     state.token = null;
     clearKitchenInterval();
+    renderMenu();
     if (window.KIS && window.KIS.commandInterval) {
         clearInterval(window.KIS.commandInterval);
         window.KIS.commandInterval = null;
@@ -79,22 +84,25 @@ function expireSession() {
 }
 
 // Format date helper
-function fmtDate(iso) {
-    if (!iso) return '';
-    // Append 'Z' if no timezone
+// Server timestamps are naive UTC; read them as UTC
+function parseServerTime(iso) {
     if (!iso.includes('Z') && !iso.match(/\+.*|-[0-9]{4}$/)) {
         iso += 'Z';
     }
-    const date = new Date(iso);
-    return date.toLocaleString();
+    return new Date(iso);
+}
+
+function fmtDate(iso) {
+    if (!iso) return '';
+    return parseServerTime(iso).toLocaleString();
 }
 
 // Format elapsed time helper
 function fmtElapsed(iso) {
     if (!iso) return '';
-    const date = new Date(iso);
+    const date = parseServerTime(iso);
     const now = new Date();
-    const diffInSeconds = Math.floor((now - date) / 1000);
+    const diffInSeconds = Math.max(0, Math.floor((now - date) / 1000));
     
     const minutes = Math.floor(diffInSeconds / 60);
     const seconds = diffInSeconds % 60;
@@ -169,6 +177,72 @@ function showCreatePartyForm(root, seat) {
 }
 
 // Render party details (for both host and server screens)
+// Small pop-up beside a menu item asking to add it to the party's order
+function showAddItemPopover(button, item, party, root) {
+    closeItemPopover();
+    const popover = document.createElement('div');
+    popover.id = 'item-popover';
+    popover.className = 'item-popover';
+    popover.innerHTML = `
+        <p><strong>Add ${escapeHtml(item.name)}?</strong></p>
+        <div class="form-group">
+            <label for="pop-qty">Qty</label>
+            <input type="number" id="pop-qty" min="1" value="1">
+        </div>
+        <div class="form-group">
+            <input type="text" id="pop-notes" placeholder="Notes (optional)">
+        </div>
+        <div class="item-popover-actions">
+            <button id="pop-add-btn" class="btn-large">Add</button>
+            <button id="pop-cancel-btn" class="btn-large">Cancel</button>
+        </div>`;
+    document.body.appendChild(popover);
+
+    // Place it to the right of the clicked item, or to the left if there is no room
+    const rect = button.getBoundingClientRect();
+    const width = popover.offsetWidth || 220;
+    const left = rect.right + 8 + width <= window.innerWidth ? rect.right + 8 : rect.left - width - 8;
+    popover.style.top = `${Math.max(8, rect.top)}px`;
+    popover.style.left = `${Math.max(8, left)}px`;
+
+    popover.querySelector('#pop-cancel-btn').addEventListener('click', closeItemPopover);
+    popover.querySelector('#pop-add-btn').addEventListener('click', () => {
+        const qty = parseInt(popover.querySelector('#pop-qty').value, 10);
+        const notes = popover.querySelector('#pop-notes').value.trim() || null;
+        if (!(qty >= 1)) {
+            alert('Quantity must be at least 1');
+            return;
+        }
+        api(`/api/v1/parties/${party.id}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ items: [{ menu_item_id: parseInt(item.id, 10), qty, notes }] })
+        })
+        .then(() => {
+            closeItemPopover();
+            // Reload this party so the selection stays and the order shows the new line
+            return api(`/api/v1/parties/${party.id}`).then(updated => renderPartyDetails(root, updated, 'server'));
+        })
+        .catch(error => alert('Could not add item: ' + error.message));
+    });
+
+    // Clicking anywhere outside the pop-up closes it
+    const outside = (event) => {
+        if (!popover.contains(event.target) && event.target !== button) {
+            closeItemPopover();
+        }
+    };
+    popover._outside = outside;
+    setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+    popover.querySelector('#pop-qty').focus();
+}
+
+function closeItemPopover() {
+    const popover = document.getElementById('item-popover');
+    if (!popover) return;
+    document.removeEventListener('pointerdown', popover._outside, true);
+    popover.remove();
+}
+
 function renderPartyDetails(root, party, role) {
     const isHostScreen = role === 'host';
     const isServerScreen = role === 'server';
@@ -223,7 +297,7 @@ function renderPartyDetails(root, party, role) {
                         <button class="btn-large" id="complete-order-btn">Complete Order</button>
                     ` : ''}
                     
-                    ${isServerScreen && !party.open_order ? `
+                    ${isServerScreen && !party.closed_at ? `
                         <h3>Menu Items</h3>
                         <div id="menu-category-list">
                             ${Object.entries(menuCategories).map(([category, items]) => `
@@ -284,70 +358,11 @@ function renderPartyDetails(root, party, role) {
                 });
             }
             
-            // Add event listeners for menu items in a server screen (for creating new order items)
-            if (isServerScreen && !party.open_order) {
+            // Clicking a menu item asks, in a small pop-up beside it, whether to add it
+            if (isServerScreen && !party.closed_at) {
                 document.querySelectorAll('.menu-item-btn').forEach(button => {
                     button.addEventListener('click', function() {
-                        const itemId = this.dataset.itemId;
-                        const name = this.dataset.name;
-                        const category = this.dataset.category;
-                        const price = this.dataset.price;
-                        
-                        // Create input for quantity
-                        root.innerHTML += `
-                            <div class="card">
-                                <h3>Add Item</h3>
-                                <div class="form-group">
-                                    <label for="qty-input">Quantity:</label>
-                                    <input type="number" id="qty-input" min="1" value="1">
-                                </div>
-                                <div class="form-group">
-                                    <label for="notes-input">Notes (optional):</label>
-                                    <input type="text" id="notes-input" placeholder="Optional notes">
-                                </div>
-                                <button id="confirm-add-item-btn" class="btn-large">Add Item to Order</button>
-                                <button id="cancel-add-btn" class="btn-large">Cancel</button>
-                            </div>
-                        `;
-                        
-                        // Add event listeners for the new inputs
-                        document.getElementById('confirm-add-item-btn').addEventListener('click', function() {
-                            const qty = parseInt(document.getElementById('qty-input').value);
-                            const notes = document.getElementById('notes-input').value || null;
-                            
-                            if (qty < 1) {
-                                alert('Quantity must be at least 1');
-                                return;
-                            }
-                            
-                            api(`/api/v1/parties/${party.id}/items`, {
-                                method: 'POST',
-                                body: JSON.stringify({
-                                    items: [{
-                                        menu_item_id: parseInt(itemId),
-                                        qty: qty,
-                                        notes: notes
-                                    }]
-                                })
-                            })
-                            .then(() => {
-                                // Refresh the server screen after adding item
-                                renderServer(root);
-                            })
-                            .catch(error => {
-                                if (error.message.includes('409')) {
-                                    alert(`Cannot add item: ${error.message}`);
-                                } else {
-                                    alert('Error adding item: ' + error.message);
-                                }
-                                console.error('Error adding item:', error);
-                            });
-                        });
-                        
-                        document.getElementById('cancel-add-btn').addEventListener('click', function() {
-                            // Refresh the server screen after cancel
-                            renderServer(root);
-                        });
+                        showAddItemPopover(this, { id: this.dataset.itemId, name: this.dataset.name }, party, root);
                     });
                 });
             }
@@ -361,7 +376,7 @@ function renderLogin(root) {
     root.innerHTML = `
         <div class="login-container">
             <div class="card">
-                <h2>KISnet POS Login</h2>
+                <h2>KISnet POS: Clock In</h2>
                 <div class="form-group">
                     <label for="employee-code">Employee Code</label>
                     <input type="text" id="employee-code" placeholder="e.g. HOST1">
@@ -381,32 +396,59 @@ function renderLogin(root) {
 function handleLogin() {
     const code = document.getElementById('employee-code').value;
     const pin = document.getElementById('pin').value;
-    
+
     if (!code || !pin) {
         alert('Please enter both employee code and PIN');
         return;
     }
-    
-    api('/auth/clock-in', {
-        method: 'POST',
-        body: JSON.stringify({ code, pin })
-    })
-    .then(data => {
-        // Store token and employee info
-        localStorage.setItem('kisnet.token', data.token);
-        state.token = data.token;
-        state.employee = data.employee;
-        
-        // Return to the page the user was on before sign-out, if their role may see it
-        const returnTo = localStorage.getItem('kisnet.returnTo');
-        localStorage.removeItem('kisnet.returnTo');
-        const role = data.employee.role;
-        goTo(returnTo && canVisit(role, returnTo.slice(1)) ? returnTo.slice(1) : stationFor(role));
-    })
-    .catch(error => {
-        alert('Login failed: ' + error.message);
-        console.error('Login error:', error);
+
+    api('/auth/preview', { method: 'POST', body: JSON.stringify({ code, pin }) })
+        .then(preview => {
+            // Already on the clock: sign straight in. Otherwise confirm the clock in first.
+            if (preview.on_clock) {
+                return completeClockIn(code, pin);
+            }
+            confirmClockIn(preview, code, pin);
+        })
+        .catch(error => alert('Login failed: ' + error.message));
+}
+
+function roleLabel(role) {
+    return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+// Pop-up asking the person to confirm their clock in
+function confirmClockIn(preview, code, pin) {
+    const employee = preview.employee;
+    const body = openModal('Confirm clock in', `
+        <p><strong>Name:</strong> ${escapeHtml(employee.name)}</p>
+        <p><strong>Position:</strong> ${escapeHtml(roleLabel(employee.role))}</p>
+        <p><strong>Time:</strong> ${fmtDate(preview.now)}</p>
+        <p>Clock in now?</p>
+        <button id="confirm-clock-in-btn" class="btn-large">Confirm clock in</button>
+        <button id="cancel-clock-in-btn" class="btn-large">Cancel</button>
+    `);
+
+    body.querySelector('#cancel-clock-in-btn').addEventListener('click', closeModal);
+    body.querySelector('#confirm-clock-in-btn').addEventListener('click', () => {
+        closeModal();
+        completeClockIn(code, pin).catch(error => alert('Login failed: ' + error.message));
     });
+}
+
+// Clock in (or sign back in) and open the station, or the page the user was on
+function completeClockIn(code, pin) {
+    return api('/auth/clock-in', { method: 'POST', body: JSON.stringify({ code, pin }) })
+        .then(data => {
+            localStorage.setItem('kisnet.token', data.token);
+            state.token = data.token;
+            state.employee = data.employee;
+
+            const returnTo = localStorage.getItem('kisnet.returnTo');
+            localStorage.removeItem('kisnet.returnTo');
+            const role = data.employee.role;
+            goTo(returnTo && canVisit(role, returnTo.slice(1)) ? returnTo.slice(1) : stationFor(role));
+        });
 }
 
 function renderCommand(root) {
@@ -673,54 +715,135 @@ function renderReports(root) {
 }
 
 // Host screen implementation
+// Pop-up box used by the Host screen. Returns the body element to fill.
+function openModal(title, bodyHtml) {
+    closeModal();
+    const overlay = document.createElement('div');
+    overlay.id = 'modal-overlay';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true">
+            <div class="modal-header">
+                <h2>${escapeHtml(title)}</h2>
+                <button id="modal-close" class="modal-x" aria-label="Close">&times;</button>
+            </div>
+            <div id="modal-body">${bodyHtml}</div>
+        </div>`;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+    overlay.querySelector('#modal-close').addEventListener('click', closeModal);
+    document.body.appendChild(overlay);
+    return overlay.querySelector('#modal-body');
+}
+
+function closeModal() {
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay) overlay.remove();
+}
+
+// Host screen: the 16 table seats (A1-D4). Clicking a table opens a pop-up to assign or view it.
 function renderHost(root) {
-    api('/api/v1/seats')
-        .then(seats => {
+    Promise.all([api('/api/v1/seats'), api('/api/v1/employees?role=server')])
+        .then(([seats, servers]) => {
+            const tables = seats.filter(seat => !seat.seat.startsWith('Z'));
             root.innerHTML = `
                 <div class="card">
-                    <h2>Host Station - Table Seats</h2>
-                    <div class="grid-buttons" id="seats-grid">
-                        ${seats.map(seat => `
-                            <button 
-                                class="button-card"
-                                data-seat="${seat.seat}" 
-                                data-occupied="${!!seat.party}"
-                                ${seat.party ? 'disabled' : ''}
-                            >
+                    <h2>Host Station - Tables</h2>
+                    <div class="grid-buttons host-grid">
+                        ${tables.map(seat => `
+                            <button class="button-card" data-seat="${seat.seat}">
                                 ${seat.seat}<br>
-                                ${seat.party ? seat.party.party_name + '<br>' + fmtElapsed(seat.party.opened_at) : 'Empty'}
+                                ${seat.party ? escapeHtml(seat.party.party_name) + '<br>' + fmtElapsed(seat.party.opened_at) : 'Empty'}
                             </button>
                         `).join('')}
                     </div>
                 </div>
             `;
-            
-            // Add event listeners to buttons
-            document.querySelectorAll('#seats-grid button').forEach(button => {
-                button.addEventListener('click', function() {
-                    const seat = this.dataset.seat;
-                    const occupied = this.dataset.occupied === 'true';
-                    
-                    if (occupied) {
-                        // Show party details for occupied seat
-                        api(`/api/v1/parties/${seat.party.id}`)
-                            .then(party => {
-                                renderPartyDetails(root, party, 'host');
-                            })
-                            .catch(error => {
-                                alert('Error loading party details: ' + error.message);
-                            });
+
+            root.querySelectorAll('.host-grid button').forEach(button => {
+                button.addEventListener('click', () => {
+                    const seat = tables.find(item => item.seat === button.dataset.seat);
+                    if (seat.party) {
+                        showOccupiedTable(root, seat.party.id);
                     } else {
-                        // Show create party form for empty seat
-                        showCreatePartyForm(root, seat);
+                        showAssignTable(root, seat.seat, servers);
                     }
                 });
             });
         })
         .catch(error => {
-            root.innerHTML = `<div class="card"><h2>Error</h2><p>${error.message}</p></div>`;
+            root.innerHTML = `<div class="card"><h2>Error</h2><p>${escapeHtml(error.message)}</p></div>`;
             console.error('Error loading seats:', error);
         });
+}
+
+// Pop-up for an empty table: assign a party and server
+function showAssignTable(root, seat, servers) {
+    if (servers.length === 0) {
+        openModal(`Table ${seat}`, '<p>No servers are set up yet.</p>');
+        return;
+    }
+    const body = openModal(`Assign table ${seat}`, `
+        <div class="form-group">
+            <label for="party-name">Party Name</label>
+            <input type="text" id="party-name" placeholder="Enter party name">
+        </div>
+        <div class="form-group">
+            <label for="party-size">Party Size</label>
+            <input type="number" id="party-size" min="1" value="2">
+        </div>
+        <div class="form-group">
+            <label for="server-select">Assigned Server</label>
+            <select id="server-select">
+                ${servers.map(server => `<option value="${server.id}">${escapeHtml(server.name)}</option>`).join('')}
+            </select>
+        </div>
+        <button id="assign-btn" class="btn-large">Assign table</button>
+        <button id="cancel-assign-btn" class="btn-large">Cancel</button>
+    `);
+
+    body.querySelector('#cancel-assign-btn').addEventListener('click', closeModal);
+    body.querySelector('#assign-btn').addEventListener('click', () => {
+        const partyName = body.querySelector('#party-name').value.trim();
+        const partySize = parseInt(body.querySelector('#party-size').value, 10);
+        const serverId = parseInt(body.querySelector('#server-select').value, 10);
+        if (!partyName || !(partySize >= 1)) {
+            alert('Enter a party name and a size of 1 or more');
+            return;
+        }
+        api('/api/v1/parties', {
+            method: 'POST',
+            body: JSON.stringify({ seat, party_name: partyName, party_size: partySize, server_id: serverId })
+        })
+        .then(() => {
+            closeModal();
+            renderHost(root);
+        })
+        .catch(error => alert('Could not assign table: ' + error.message));
+    });
+}
+
+// Pop-up for a table that already has a party: details and close
+function showOccupiedTable(root, partyId) {
+    api(`/api/v1/parties/${partyId}`)
+        .then(party => {
+            const body = openModal(`Table ${party.seat}`, `
+                <p><strong>${escapeHtml(party.party_name)}</strong>, party of ${party.party_size}</p>
+                <p>Server: ${escapeHtml(party.server_name || 'none')}</p>
+                <p>Seated: ${fmtDate(party.opened_at)} (${fmtElapsed(party.opened_at)} ago)</p>
+                <button id="close-table-btn" class="btn-large">Close table</button>
+                <button id="done-table-btn" class="btn-large">Done</button>
+            `);
+            body.querySelector('#done-table-btn').addEventListener('click', closeModal);
+            body.querySelector('#close-table-btn').addEventListener('click', () => {
+                api(`/api/v1/parties/${party.id}/close`, { method: 'POST' })
+                    .then(() => {
+                        closeModal();
+                        renderHost(root);
+                    })
+                    .catch(error => alert('Could not close table: ' + error.message));
+            });
+        })
+        .catch(error => alert('Error loading table: ' + error.message));
 }
 
 // Server screen implementation
@@ -979,8 +1102,20 @@ const SCREENS = {
     '/server': renderServer,
     '/bar': renderBar,
     '/kitchen': renderKitchen,
-    '/timecard': renderTimeCard
+    '/timecard': renderTimeCard,
+    '/home': renderHome
 };
+
+// Home: default landing page; clock in from Login
+function renderHome(root) {
+    root.innerHTML = `
+        <div class="card">
+            <h2>KISnet POS</h2>
+            <p>Welcome. Use <strong>Login</strong> to clock in and open your station. Your hours and Clock Out are on the <strong>Time Card</strong>.</p>
+            <button id="home-login-btn" class="btn-large">Go to Login</button>
+        </div>`;
+    root.querySelector('#home-login-btn').addEventListener('click', () => goTo('/login'));
+}
 
 // Time card: the signed-in employee's entries for one week, with a clock-out button.
 // Admins also see every employee's total for the week.
@@ -1002,6 +1137,16 @@ function escapeHtml(text) {
 }
 
 function renderTimeCard(root) {
+    if (!state.employee) {
+        root.innerHTML = `
+            <div class="card">
+                <h2>Time Card</h2>
+                <p>Log in to see your time card.</p>
+                <button id="tc-login-btn" class="btn-large">Go to Login</button>
+            </div>`;
+        root.querySelector('#tc-login-btn').addEventListener('click', () => goTo('/login'));
+        return;
+    }
     root.innerHTML = '<div class="card"><h2>Time Card (Loading...)</h2></div>';
     const query = timecardWeek ? `?week=${timecardWeek}` : '';
     const isAdmin = state.employee && state.employee.role === 'admin';
@@ -1074,6 +1219,20 @@ function buildTimeCard(root, card, summary) {
     return wrap;
 }
 
+// Logout: end this session but stay on the clock (clocking out lives on the Time Card)
+function logout() {
+    api('/auth/logout', { method: 'POST' })
+        .catch(() => {})
+        .then(() => {
+            localStorage.removeItem('kisnet.token');
+            localStorage.removeItem('kisnet.returnTo');
+            state.employee = null;
+            state.token = null;
+            renderMenu();
+            go('#/login');
+        });
+}
+
 // Clock out function
 function clockOut() {
     localStorage.removeItem('kisnet.returnTo');
@@ -1083,6 +1242,7 @@ function clockOut() {
             localStorage.removeItem('kisnet.token');
             state.employee = null;
             state.token = null;
+            renderMenu();
             
             // Go back to login
             go('#/login');
@@ -1105,13 +1265,13 @@ function renderNavBar() {
     if (state.employee) {
         topBar.innerHTML = `
             <div>Welcome, ${state.employee.name} (${state.employee.role})</div>
-            <button id="clock-out-btn" class="btn-large">Clock Out</button>
+            <button id="logout-btn" class="btn-large">Logout</button>
         `;
         
         document.getElementById('app').prepend(topBar);
         
         // Add event listener for clock out button
-        document.getElementById('clock-out-btn').addEventListener('click', clockOut);
+        document.getElementById('logout-btn').addEventListener('click', logout);
     } else {
         topBar.innerHTML = '<div>KISnet POS</div>';
         document.getElementById('app').prepend(topBar);
@@ -1119,147 +1279,125 @@ function renderNavBar() {
 }
 
 // Update screen based on hash
+// Screens a logged-out visitor may open
+const PUBLIC_PATHS = ['/home', '/login', '/timecard'];
+
+// Menu labels for every screen the menu can open
+const MENU_LABELS = {
+    '/home': 'Home', '/login': 'Login',
+    '/command': 'Command Center', '/reports': 'Reports', '/host': 'Host', '/server': 'Server',
+    '/bar': 'Bar', '/kitchen': 'Kitchen', '/timecard': 'Time Card'
+};
+
+// The three-bar menu sits outside the screens, so it is available on every page
+function buildMenuChrome() {
+    document.body.insertAdjacentHTML('beforeend', `
+        <button id="menu-toggle" class="menu-toggle" aria-label="Open menu">&#9776;</button>
+        <div id="menu-backdrop" class="menu-backdrop"></div>
+        <nav id="side-menu" class="side-menu"></nav>`);
+    document.getElementById('menu-toggle').addEventListener('click', () => toggleMenu(!isMenuOpen()));
+    document.getElementById('menu-backdrop').addEventListener('click', () => toggleMenu(false));
+}
+
+function isMenuOpen() {
+    return document.getElementById('side-menu').classList.contains('open');
+}
+
+function toggleMenu(open) {
+    document.getElementById('side-menu').classList.toggle('open', open);
+    document.getElementById('menu-backdrop').classList.toggle('open', open);
+}
+
+// Menu options depend on who is signed in; logged-out users see Login
+function renderMenu() {
+    const menu = document.getElementById('side-menu');
+    if (!menu) return;
+    let paths;
+    if (!state.employee) {
+        paths = ['/home', '/login', '/timecard'];
+    } else if (state.employee.role === 'admin') {
+        paths = ['/command', '/reports', '/host', '/server', '/bar', '/kitchen', '/timecard'];
+    } else {
+        paths = [stationFor(state.employee.role), '/timecard'];
+    }
+    menu.innerHTML = '<h3 class="side-menu-title">Menu</h3>';
+    paths.forEach(path => {
+        const link = document.createElement('a');
+        link.href = `#${path}`;
+        link.className = 'nav-item';
+        link.textContent = MENU_LABELS[path];
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            toggleMenu(false);
+            go(path);
+        });
+        menu.appendChild(link);
+    });
+}
+
 function updateScreen() {
     const root = document.getElementById('app');
-    
-    // Clear existing content
-    if (root) {
-        root.innerHTML = '';
-        
-        // Remove old nav bar if exists
-        const existingNavBar = document.querySelector('.top-bar');
-        if (existingNavBar) {
-            existingNavBar.remove();
-        }
-        
-        // Add main container and sidebar for authenticated screens
-        if (state.employee) {
-            const container = document.createElement('div');
-            container.className = 'container';
-            
-            // Create sidebar navigation
-            const sidebar = document.createElement('div');
-            sidebar.className = 'sidebar';
-            
-            const navItems = [
-                { path: '/command', label: 'Command Center' },
-                { path: '/reports', label: 'Reports' },
-                { path: '/host', label: 'Host' },
-                { path: '/server', label: 'Server' },
-                { path: '/bar', label: 'Bar' },
-                { path: '/kitchen', label: 'Kitchen' },
-                { path: '/timecard', label: 'Time Card' }
-            ];
-            
-            if (state.employee.role === 'admin') {
-                navItems.forEach(item => {
-                    const link = document.createElement('a');
-                    link.href = `#${item.path}`;
-                    link.className = 'nav-item';
-                    link.textContent = item.label;
-                    link.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        go(item.path);
-                    });
-                    sidebar.appendChild(link);
-                });
-            } else {
-                // For non-admin roles, only show the correct screen
-                const roleMap = {
-                    'host': '/host',
-                    'server': '/server',
-                    'bartender': '/bar',
-                    'kitchen': '/kitchen'
-                };
-                
-                if (roleMap[state.employee.role]) {
-                    const link = document.createElement('a');
-                    link.href = `#${roleMap[state.employee.role]}`;
-                    link.className = 'nav-item';
-                    link.textContent = roleMap[state.employee.role].substring(1).charAt(0).toUpperCase() + roleMap[state.employee.role].substring(2);
-                    link.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        go(roleMap[state.employee.role]);
-                    });
-                    sidebar.appendChild(link);
-                }
+    if (!root) return;
 
-                const timeLink = document.createElement('a');
-                timeLink.href = '#/timecard';
-                timeLink.className = 'nav-item';
-                timeLink.textContent = 'Time Card';
-                timeLink.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    go('/timecard');
+    closeModal();
+    root.innerHTML = '';
+    document.querySelectorAll('.top-bar').forEach(bar => bar.remove());
+    renderMenu();
+
+    const container = document.createElement('div');
+    container.className = 'container';
+    const mainContent = document.createElement('div');
+    mainContent.className = 'main-content';
+    container.appendChild(mainContent);
+    root.appendChild(container);
+
+    if (!state.employee) {
+        // Try to resume a saved session, otherwise show the login form
+        const token = localStorage.getItem('kisnet.token');
+        if (token) {
+            api('/auth/me')
+                .then(data => {
+                    state.employee = data;
+                    state.token = token;
+                    const current = window.location.hash.slice(1);
+                    goTo(current && canVisit(data.role, current) ? current : stationFor(data.role));
+                })
+                .catch(() => {
+                    localStorage.removeItem('kisnet.token');
+                    renderLogin(mainContent);
                 });
-                sidebar.appendChild(timeLink);
-            }
-            
-            const mainContent = document.createElement('div');
-            mainContent.className = 'main-content';
-            
-            // Append to container
-            container.appendChild(sidebar);
-            container.appendChild(mainContent);
-            root.appendChild(container);
-            
-            // Render navigation bar
-            renderNavBar();
-            
-            // Render current screen  
-            const path = window.location.hash.slice(1) || '/login';
-            if (SCREENS[path]) {
-                // Clear kitchen interval if leaving kitchen screen
-                if (window.KIS && window.KIS.kitchenInterval && 
-                    (window.location.hash.slice(1) === '/kitchen' || 
-                     (window.location.hash.slice(1) !== '/kitchen' && path === '/kitchen'))) {
-                    clearKitchenInterval();
-                }
-                
-                // Clear command interval if leaving command screen
-                if (window.KIS && window.KIS.commandInterval && 
-                    (window.location.hash.slice(1) === '/command' || 
-                     (window.location.hash.slice(1) !== '/command' && path === '/command'))) {
-                    clearInterval(window.KIS.commandInterval);
-                    window.KIS.commandInterval = null;
-                }
-                
+        } else {
+            // Logged out: show the page asked for if it is public, otherwise the login form
+            const path = window.location.hash.slice(1);
+            if (PUBLIC_PATHS.includes(path)) {
                 SCREENS[path](mainContent);
             } else {
-                go('/login');  // Redirect to login if invalid path
-            }
-        } else {
-            // Show login screen for unauthenticated users
-            const container = document.createElement('div');
-            container.className = 'container';
-            root.appendChild(container);
-            
-            // Check if there's a token and attempt auto-login
-            const token = localStorage.getItem('kisnet.token');
-            if (token) {
-                // Try to validate the token
-                api('/auth/me')
-                    .then(data => {
-                        state.employee = data;
-                        state.token = token;
-                        const current = window.location.hash.slice(1);
-                        goTo(current && canVisit(data.role, current) ? current : stationFor(data.role));
-                    })
-                    .catch(() => {
-                        // Invalid token, remove and show login
-                        localStorage.removeItem('kisnet.token');
-                        renderLogin(container);
-                    });
-            } else {
-                // Show login form
-                renderLogin(container);
+                renderLogin(mainContent);
             }
         }
+        return;
     }
+
+    renderNavBar();
+    const path = window.location.hash.slice(1) || '/login';
+    if (!SCREENS[path]) {
+        go('/login');
+        return;
+    }
+    if (path !== '/kitchen') {
+        clearKitchenInterval();
+    }
+    if (path !== '/command' && window.KIS && window.KIS.commandInterval) {
+        clearInterval(window.KIS.commandInterval);
+        window.KIS.commandInterval = null;
+    }
+    SCREENS[path](mainContent);
 }
 
 // Initialize the app
 function init() {
+    buildMenuChrome();
+
     // Listen for hash changes
     window.addEventListener('hashchange', updateScreen);
 
