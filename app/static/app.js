@@ -55,7 +55,7 @@ function stationFor(role) {
 }
 
 function canVisit(role, path) {
-    return role === 'admin' ? path in SCREENS : path === stationFor(role);
+    return role === 'admin' ? path in SCREENS : (path === stationFor(role) || path === '/timecard');
 }
 
 // Idle sign-out: after this long with no input, return to login and resume the same page after signing in
@@ -978,8 +978,101 @@ const SCREENS = {
     '/host': renderHost,
     '/server': renderServer,
     '/bar': renderBar,
-    '/kitchen': renderKitchen
+    '/kitchen': renderKitchen,
+    '/timecard': renderTimeCard
 };
+
+// Time card: the signed-in employee's entries for one week, with a clock-out button.
+// Admins also see every employee's total for the week.
+let timecardWeek = null; // any day in the week on screen; null = this week
+
+function isoDay(date) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function shiftWeek(weekStart, weeks) {
+    const base = weekStart ? new Date(weekStart + 'T00:00:00') : new Date();
+    base.setDate(base.getDate() + 7 * weeks);
+    return isoDay(base);
+}
+
+function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderTimeCard(root) {
+    root.innerHTML = '<div class="card"><h2>Time Card (Loading...)</h2></div>';
+    const query = timecardWeek ? `?week=${timecardWeek}` : '';
+    const isAdmin = state.employee && state.employee.role === 'admin';
+
+    Promise.all([
+        api(`/api/v1/timecard${query}`),
+        isAdmin ? api(`/api/v1/timecard/summary${query}`) : Promise.resolve(null)
+    ])
+    .then(([card, summary]) => {
+        timecardWeek = card.week_start;
+        root.innerHTML = '';
+        root.appendChild(buildTimeCard(root, card, summary));
+    })
+    .catch(error => {
+        root.innerHTML = `<div class="card"><h2>Time Card</h2><p>Error loading time card: ${escapeHtml(error.message)}</p></div>`;
+    });
+}
+
+function buildTimeCard(root, card, summary) {
+    const wrap = document.createElement('div');
+    const entryRows = card.entries.map(entry => `
+        <tr>
+            <td>${fmtDate(entry.clocked_in_at)}</td>
+            <td>${entry.clocked_out_at ? fmtDate(entry.clocked_out_at) : '<em>On clock</em>'}</td>
+            <td>${entry.hours.toFixed(2)}</td>
+        </tr>`).join('') || '<tr><td colspan="3">No time recorded this week</td></tr>';
+
+    wrap.innerHTML = `
+        <div class="card">
+            <h2>Time Card: ${escapeHtml(card.employee.name)} (${escapeHtml(card.employee.role)})</h2>
+            <div class="week-nav">
+                <button id="tc-prev" class="btn-large">&larr; Previous week</button>
+                <span>Week of ${card.week_start} to ${card.week_end}</span>
+                <button id="tc-this" class="btn-large">This week</button>
+                <button id="tc-next" class="btn-large">Next week &rarr;</button>
+            </div>
+            <table class="data-table">
+                <thead><tr><th>Clocked in</th><th>Clocked out</th><th>Hours</th></tr></thead>
+                <tbody>${entryRows}</tbody>
+                <tfoot><tr><th colspan="2">Total this week</th><th>${card.total_hours.toFixed(2)}</th></tr></tfoot>
+            </table>
+            <button id="tc-clock-out" class="btn-large">Clock Out</button>
+        </div>`;
+
+    if (summary) {
+        const summaryRows = summary.rows.map(row => `
+            <tr>
+                <td>${escapeHtml(row.name)}</td>
+                <td>${escapeHtml(row.code)}</td>
+                <td>${escapeHtml(row.role)}</td>
+                <td>${row.on_clock ? 'On clock' : ''}</td>
+                <td>${row.total_hours.toFixed(2)}</td>
+            </tr>`).join('') || '<tr><td colspan="5">No employee worked this week</td></tr>';
+        const summaryCard = document.createElement('div');
+        summaryCard.innerHTML = `
+            <div class="card">
+                <h2>All employees, week of ${summary.week_start}</h2>
+                <table class="data-table">
+                    <thead><tr><th>Name</th><th>Code</th><th>Role</th><th>Status</th><th>Hours</th></tr></thead>
+                    <tbody>${summaryRows}</tbody>
+                </table>
+            </div>`;
+        wrap.appendChild(summaryCard);
+    }
+
+    wrap.querySelector('#tc-prev').addEventListener('click', () => { timecardWeek = shiftWeek(card.week_start, -1); renderTimeCard(root); });
+    wrap.querySelector('#tc-next').addEventListener('click', () => { timecardWeek = shiftWeek(card.week_start, 1); renderTimeCard(root); });
+    wrap.querySelector('#tc-this').addEventListener('click', () => { timecardWeek = null; renderTimeCard(root); });
+    wrap.querySelector('#tc-clock-out').addEventListener('click', clockOut);
+    return wrap;
+}
 
 // Clock out function
 function clockOut() {
@@ -1054,7 +1147,8 @@ function updateScreen() {
                 { path: '/host', label: 'Host' },
                 { path: '/server', label: 'Server' },
                 { path: '/bar', label: 'Bar' },
-                { path: '/kitchen', label: 'Kitchen' }
+                { path: '/kitchen', label: 'Kitchen' },
+                { path: '/timecard', label: 'Time Card' }
             ];
             
             if (state.employee.role === 'admin') {
@@ -1089,6 +1183,16 @@ function updateScreen() {
                     });
                     sidebar.appendChild(link);
                 }
+
+                const timeLink = document.createElement('a');
+                timeLink.href = '#/timecard';
+                timeLink.className = 'nav-item';
+                timeLink.textContent = 'Time Card';
+                timeLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    go('/timecard');
+                });
+                sidebar.appendChild(timeLink);
             }
             
             const mainContent = document.createElement('div');

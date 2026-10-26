@@ -67,6 +67,7 @@ Base path `/api/v1`. Interactive docs at `/docs`.
 - `orders`: `POST /parties/{id}/items`, `PATCH|DELETE /order-items/{id}`, `POST /parties/{id}/complete`
 - `tickets`: `GET /tickets?track=appetizers|hot|cold|bar`, `POST /tickets/{order_id}/{track}/bump`
 - `menu`: `GET /menu`, `GET /menu/export`, `POST /menu/import` (raw CSV body, admin)
+- `timecard`: `GET /timecard?week=` (own entries and hours for the week; defaults to this week in business time), `GET /timecard/summary?week=` (admin: every employee's hours that week)
 - `admin`: `GET /employees?role=`, `GET /admin/on-clock`, `POST /admin/clock-out/{employee_id}`
 - `reports` (admin): `GET /reports/daily-sales`, `GET /reports/food-usage` (both take `start` and `end` as YYYY-MM-DD)
 
