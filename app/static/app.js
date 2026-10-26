@@ -1,6 +1,6 @@
 // API helper function
 function api(path, opts = {}) {
-    const url = '/api/v1' + path;
+    const url = path.startsWith('/api/v1') ? path : '/api/v1' + path;
     const defaultOpts = {
         headers: {
             'Content-Type': 'application/json',
@@ -988,13 +988,13 @@ function renderNavBar() {
             <button id="clock-out-btn" class="btn-large">Clock Out</button>
         `;
         
-        document.body.insertBefore(topBar, document.querySelector('.container'));
+        document.getElementById('app').prepend(topBar);
         
         // Add event listener for clock out button
         document.getElementById('clock-out-btn').addEventListener('click', clockOut);
     } else {
         topBar.innerHTML = '<div>KISnet POS</div>';
-        document.body.insertBefore(topBar, document.querySelector('.container'));
+        document.getElementById('app').prepend(topBar);
     }
 }
 
