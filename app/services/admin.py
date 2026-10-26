@@ -47,7 +47,8 @@ def on_clock(session: Session) -> List[dict]:
                 "code": employee.code,
                 "name": employee.name,
                 "role": employee.role,
-                "clocked_in_at": entry.clocked_in_at
+                "clocked_in_at": entry.clocked_in_at,
+                "logged_in": entry.token_hash is not None,
             })
     
     return result

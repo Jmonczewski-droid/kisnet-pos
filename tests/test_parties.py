@@ -43,13 +43,13 @@ def test_create_table_party_with_server(client, db, login):
 
 
 def test_host_creating_at_bar_seat_fails(client, db, login):
-    # HOST1 trying to create a party at Z3 (bar seat) should fail
+    # HOST1 trying to create a party at BAR3 (bar seat) should fail
     headers = login("HOST1")
     
     response = client.post(
         "/api/v1/parties",
         json={
-            "seat": "Z3",
+            "seat": "BAR3",
             "party_name": "Test Party",
             "party_size": 4,
             "server_id": 2
@@ -61,24 +61,29 @@ def test_host_creating_at_bar_seat_fails(client, db, login):
 
 
 def test_bartender_creating_at_bar_seat(client, db, login):
-    # BAR1 (bartender) creates a party at Z3 with server null
+    # BAR1 (bartender) creates a party at BAR3 with only a name: no size, and the bartender is the server
     headers = login("BAR1")
-    
+
     response = client.post(
         "/api/v1/parties",
-        json={
-            "seat": "Z3",
-            "party_name": "Test Party",
-            "party_size": 4,
-            "server_id": None
-        },
+        json={"seat": "BAR3", "party_name": "Test Party"},
         headers=headers
     )
-    
+
     assert response.status_code == 201
     data = response.json()
-    assert data["seat"] == "Z3"
-    assert data["server_id"] is None
+    assert data["seat"] == "BAR3"
+    assert data["server_id"] == 4  # BAR1's employee id
+    assert data["server_name"] == "Jessica Moore"
+
+
+def test_table_party_requires_party_size(client, db, login):
+    response = client.post(
+        "/api/v1/parties",
+        json={"seat": "B4", "party_name": "No Size", "server_id": 2},
+        headers=login("HOST1"),
+    )
+    assert response.status_code == 422
 
 
 def test_duplicate_seat_fails(client, db, login):
@@ -139,10 +144,10 @@ def test_get_seats(client, db, login):
     data = response.json()
     assert len(data) == 26  # 16 table seats + 10 bar seats
     
-    # Check that Z3 (bar seat) is in the list
-    z3_seat = next((s for s in data if s["seat"] == "Z3"), None)
-    assert z3_seat is not None
-    assert z3_seat["party"] is None  # No party at Z3 yet
+    # Check that BAR3 (bar seat) is in the list
+    bar3_seat = next((s for s in data if s["seat"] == "BAR3"), None)
+    assert bar3_seat is not None
+    assert bar3_seat["party"] is None  # No party at BAR3 yet
 
 
 def test_server_sees_own_parties(client, db, login):
@@ -191,12 +196,17 @@ def _open_party_with_caesar(client, db, login):
     return party_id
 
 
-def test_close_party_with_open_order_fails(client, db, login):
+def test_close_party_completes_its_open_order(client, db, login):
+    from app.models import Order
+
     party_id = _open_party_with_caesar(client, db, login)
 
     response = client.post(f"/api/v1/parties/{party_id}/close", headers=login("HOST1"))
 
-    assert response.status_code == 409
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    order = db.query(Order).filter_by(party_id=party_id).one()
+    assert order.status == "completed"
 
 
 def test_close_party_after_completing_order(client, db, login):
@@ -212,26 +222,15 @@ def test_close_party_after_completing_order(client, db, login):
     assert b2["party"] is None
 
 
-def test_server_cannot_close_party(client, db, login):
-    # HOST1 creates a party at B2 with server SRV1  
-    headers = login("HOST1")
-    
-    response = client.post(
-        "/api/v1/parties",
-        json={
-            "seat": "B2",
-            "party_name": "Test Party",
-            "party_size": 4,
-            "server_id": 2
-        },
-        headers=headers
-    )
-    
-    party_data = response.json()
-    party_id = party_data["id"]
-    
-    # SRV1 (server) tries to close the party - should fail with 403
-    headers = login("SRV1")
-    response = client.post(f"/api/v1/parties/{party_id}/close", headers=headers)
-    
-    assert response.status_code == 403
+def test_server_sends_own_table_to_payment_only(client, db, login):
+    # HOST1 seats a party at B2 with server SRV1
+    response = client.post("/api/v1/parties", json={"seat": "B2", "party_name": "Test Party",
+                                                    "party_size": 4, "server_id": 2}, headers=login("HOST1"))
+    party_id = response.json()["id"]
+
+    # SRV2 is not this table's server: refused
+    assert client.post(f"/api/v1/parties/{party_id}/close", headers=login("SRV2")).status_code == 403
+
+    # SRV1 is the table's server: sends it to payment
+    assert client.post(f"/api/v1/parties/{party_id}/close", headers=login("SRV1")).status_code == 200
+

@@ -64,47 +64,18 @@ def _ensure_item_exists(session: Session, item_id: int) -> OrderItem:
     return item
 
 
-def add_items(session: Session, user, party, items: OrderItemsIn) -> Order:
-    """Add items to an existing or new order for the party."""
-    # Ensure party is open
-    party = _ensure_party_open(session, party.id)
-    
-    # Check permissions
-    if not can_order(user, party):
-        raise OrderError(403, "Not authorized to add items to this party")
-    
-    # Get or create order
-    order = None
-    for o in party.orders:
-        if o.status == "open":
-            order = o
-            break
-    
-    if not order:
-        # Create new order
-        order = Order(
-            party_id=party.id,
-            status="open",
-            opened_at=utcnow()
-        )
-        session.add(order)
-        session.flush()  # Ensure we have an ID for the new order
-    else:
-        # Make sure this is not a completed order
-        if order.status == "completed":
-            raise OrderError(409, "Party has a completed order")
-    
-    # Process items
-    already_has_items = len(order.items) > 0
-    changed = already_has_items
-    
-    for item_data in items.items:
-        # Verify menu item exists and is active
+def _open_order(session: Session, party) -> Optional[Order]:
+    return session.query(Order).filter_by(party_id=party.id, status="open").first()
+
+
+def _append_items(session: Session, user, order: Order, lines, changed: bool) -> None:
+    """Add order lines (with recipe snapshots) to an order. Does not commit."""
+    from app.models import OrderItemIngredient
+    for item_data in lines:
         menu_item = session.get(MenuItem, item_data.menu_item_id)
         if not menu_item or not menu_item.active:
             raise OrderError(422, "Invalid menu item")
-        
-        # Create order item
+
         order_item = OrderItem(
             order_id=order.id,
             menu_item_id=item_data.menu_item_id,
@@ -117,26 +88,89 @@ def add_items(session: Session, user, party, items: OrderItemsIn) -> Order:
             created_by_id=user.id,
             sent_at=utcnow(),
         )
-        
         session.add(order_item)
         session.flush()  # assign order_item.id before copying recipe lines
-        
-        # Copy recipe lines to order_item_ingredients
+
         for recipe_line in menu_item.recipe_lines:
-            from app.models import OrderItemIngredient
-            ingredient = OrderItemIngredient(
+            session.add(OrderItemIngredient(
                 order_item_id=order_item.id,
                 ingredient=recipe_line.ingredient,
                 qty=recipe_line.qty,
                 unit=recipe_line.unit
-            )
-            session.add(ingredient)
-    
+            ))
+
+
+def add_items(session: Session, user, party, items: OrderItemsIn) -> Order:
+    """Add items to the party's open order (creating it if needed)."""
+    party = _ensure_party_open(session, party.id)
+    if not can_order(user, party):
+        raise OrderError(403, "Not authorized to add items to this party")
+
+    order = _open_order(session, party)
+    if not order:
+        order = Order(party_id=party.id, status="open", opened_at=utcnow())
+        session.add(order)
+        session.flush()
+
+    # Lines added after the first send are marked CHANGED on the kitchen ticket
+    changed = len(order.items) > 0
+    _append_items(session, user, order, items.items, changed)
     session.commit()
-    
-    # Reload order to get the updated items
     session.refresh(order)
-    
+    return order
+
+
+def send_ticket(session: Session, user, party, new_items, updates, voids) -> Order:
+    """
+    Send the ticket in one step: new lines, quantity/note changes to sent lines,
+    and voids. Nothing is saved until this is called.
+    """
+    party = _ensure_party_open(session, party.id)
+    if not can_order(user, party):
+        raise OrderError(403, "Not authorized to send items for this party")
+
+    order = _open_order(session, party)
+    if order is None and (updates or voids):
+        raise OrderError(409, "No open order to change")
+
+    # Check every change against the order before touching anything
+    existing = {item.id: item for item in order.items} if order else {}
+    for update in updates:
+        item = existing.get(update.item_id)
+        if item is None:
+            raise OrderError(422, f"Item {update.item_id} is not on this ticket")
+        if item.voided or item.bumped_at:
+            raise OrderError(409, f"{item.name} has already gone to the kitchen or bar")
+    for item_id in voids:
+        item = existing.get(item_id)
+        if item is None:
+            raise OrderError(422, f"Item {item_id} is not on this ticket")
+        if item.voided or item.bumped_at:
+            raise OrderError(409, f"{item.name} has already gone to the kitchen or bar")
+
+    if not new_items and not updates and not voids:
+        raise OrderError(422, "Nothing to send")
+
+    if order is None:
+        order = Order(party_id=party.id, status="open", opened_at=utcnow())
+        session.add(order)
+        session.flush()
+
+    for update in updates:
+        item = existing[update.item_id]
+        if update.qty is not None and update.qty != item.qty:
+            item.qty = update.qty
+            item.changed = True
+        if update.notes is not None:
+            item.notes = update.notes
+
+    for item_id in voids:
+        existing[item_id].voided = True
+
+    changed = len(order.items) > 0
+    _append_items(session, user, order, new_items, changed)
+    session.commit()
+    session.refresh(order)
     return order
 
 

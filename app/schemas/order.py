@@ -46,6 +46,18 @@ class OrderItemOut(BaseModel):
         from_attributes = True
 
 
+class TicketUpdateIn(BaseModel):
+    item_id: int
+    qty: Optional[int] = Field(None, ge=1)
+    notes: Optional[str] = None
+
+
+class TicketSendIn(BaseModel):
+    items: List[OrderItemIn] = []
+    updates: List[TicketUpdateIn] = []
+    voids: List[int] = []
+
+
 class OrderOut(BaseModel):
     id: int
     party_id: int

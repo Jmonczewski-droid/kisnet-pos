@@ -37,13 +37,17 @@ def client(db):
 @pytest.fixture
 def login(db):
     """Clock an employee in via the auth service (no HTTP, so it works before app.main exists)."""
-    from app.services.auth import clock_in
+    from app.services.auth import AuthError, clock_in, login
 
     cache = {}
 
     def _login(code: str, pin: str = "1234") -> dict:
         if code not in cache:
-            _, token = clock_in(db, code, pin)
+            try:
+                clock_in(db, code, pin)
+            except AuthError:
+                pass  # already on the clock
+            _, token = login(db, code, pin)
             cache[code] = {"Authorization": f"Bearer {token}"}
         return cache[code]
 

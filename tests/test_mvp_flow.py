@@ -8,7 +8,7 @@ def test_mvp_workflow(client, login):
     1. HOST1 creates party "Smith", size 4, seat B2, server_id = SRV1's id
     2. SRV1 GET /api/v1/parties?open=true finds B2; POST /api/v1/parties/{id}/items with 2 Caesar Salad, 1 Burger, 2 Beer
     3. KIT1 GET /api/v1/tickets?track=cold shows Caesar lines with seat B2; track=hot shows Burger; BAR1 GET /api/v1/tickets?track=bar shows Beer
-    4. BAR1 creates party "Jones" size 2 at seat Z3 (no server). Orders 1 Mozzarella Sticks and 1 Beer. KIT1 GET track=appetizers shows seat Z3
+    4. BAR1 creates party "Jones" size 2 at seat BAR3 (no server). Orders 1 Mozzarella Sticks and 1 Beer. KIT1 GET track=appetizers shows seat BAR3
     5. Complete both orders: SRV1 POST /api/v1/parties/{smith}/complete and BAR1 POST /api/v1/parties/{jones}/complete
     6. ADM1: GET /api/v1/admin/on-clock lists HOST1, SRV1, KIT1, BAR1, ADM1. Daily sales for explicit start/end equal to today's date in settings.BUSINESS_TIMEZONE has order_count 2, Caesar qty 2, Beer qty 3, Burger qty 1; food-usage has Romaine Lettuce 16 oz, Caesar Dressing 8 oz, Parmesan 4 oz.
     """
@@ -113,11 +113,11 @@ def test_mvp_workflow(client, login):
             break
     assert beer_found, "BAR1 should see Beer on bar track for party Smith"
     
-    # 4. BAR1 creates party "Jones" size 2 at seat Z3 (no server). Orders 1 Mozzarella Sticks and 1 Beer.
+    # 4. BAR1 creates party "Jones" size 2 at seat BAR3 (no server). Orders 1 Mozzarella Sticks and 1 Beer.
     response = client.post(
         "/api/v1/parties",
         json={
-            "seat": "Z3", 
+            "seat": "BAR3", 
             "party_name": "Jones",
             "party_size": 2,
             "server_id": None

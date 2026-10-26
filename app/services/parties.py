@@ -17,6 +17,20 @@ class PartyError(Exception):
         super().__init__(detail)
 
 
+def _drinks_ready_at(session: Session, party) -> Optional[str]:
+    """Latest time the bar bumped a drink on this party's open order (ISO), or None."""
+    from sqlalchemy import func
+    from app.models import Order, OrderItem
+    latest = (
+        session.query(func.max(OrderItem.bumped_at))
+        .join(Order, OrderItem.order_id == Order.id)
+        .filter(Order.party_id == party.id, Order.status == "open",
+                OrderItem.category == "bar", OrderItem.voided == False)  # noqa: E712
+        .scalar()
+    )
+    return latest.isoformat() if latest else None
+
+
 def list_seats(session: Session, user) -> List[dict]:
     """List all seats with their party information."""
     # Get all open parties for filtering
@@ -43,6 +57,7 @@ def list_seats(session: Session, user) -> List[dict]:
                 seat=party.seat,
                 party_name=party.party_name,
                 party_size=party.party_size,
+                drinks_ready_at=_drinks_ready_at(session, party),
                 server_id=party.server_id,
                 server_name=server_name,
                 opened_at=party.opened_at.isoformat() if party.opened_at else None
@@ -79,6 +94,7 @@ def list_open_parties(session: Session, user) -> List[PartySummary]:
                 seat=party.seat,
                 party_name=party.party_name,
                 party_size=party.party_size,
+                drinks_ready_at=_drinks_ready_at(session, party),
                 server_id=party.server_id,
                 server_name=server_name,
                 opened_at=party.opened_at.isoformat() if party.opened_at else None
@@ -120,6 +136,10 @@ def create_party(session: Session, user, data) -> PartyDetail:
     if existing_party:
         raise PartyError(409, "Seat is already occupied")
     
+    # Table parties need a size; bar parties do not (the bartender is the server)
+    if data.seat in TABLE_SEATS and not data.party_size:
+        raise PartyError(422, "Party size is required at tables")
+
     # For host role, ensure server_id is valid
     if user.role == "host":
         if not data.server_id:
@@ -134,8 +154,8 @@ def create_party(session: Session, user, data) -> PartyDetail:
     party = Party(
         seat=data.seat,
         party_name=data.party_name,
-        party_size=data.party_size,
-        server_id=data.server_id,
+        party_size=data.party_size or 1,
+        server_id=user.id if user.role == "bartender" else data.server_id,
         created_by_id=user.id,
         opened_at=utcnow()
     )
@@ -176,6 +196,7 @@ def get_party_detail(session: Session, user, party_id: int) -> PartyDetail:
         seat=party.seat,
         party_name=party.party_name,
         party_size=party.party_size,
+        drinks_ready_at=_drinks_ready_at(session, party),
         server_id=party.server_id,
         server_name=server_name,
         opened_at=party.opened_at.isoformat() if party.opened_at else None,
@@ -193,20 +214,16 @@ def close_party(session: Session, user, party_id: int) -> PartyDetail:
     if party.closed_at is not None:
         raise PartyError(409, "Party is already closed")
     
-    # Check if the party has an open order
-    has_open_order = False
+    # Closing the table completes its open order (sent items stay on the report)
     for order in party.orders:
         if order.status == "open":
-            has_open_order = True
-            break
+            order.status = "completed"
+            order.completed_at = utcnow()
     
-    if has_open_order:
-        raise PartyError(409, "Party has an open order")
-    
-    # Check user permission to close this party
+    # Servers send their own tables to payment (closing the table completes its order)
     if user.role == "server":
-        # Servers cannot close parties
-        raise PartyError(403, "Not authorized to close this party")
+        if party.server_id != user.id or party.seat not in TABLE_SEATS:
+            raise PartyError(403, "Servers can only send their own tables to payment")
     
     # For host or bartender or admin, check seat permissions
     if user.role == "host" and party.seat not in TABLE_SEATS:

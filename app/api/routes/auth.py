@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from app.db.base import get_db
 from app.schemas.auth import ClockInIn, EmployeeOut, TokenOut, ClockedOutOut
-from app.services.auth import clock_in, clock_out, logout, preview_clock_in, AuthError, get_employee_by_token
+from app.services.auth import clock_in, login, clock_out, logout, preview_clock_in, open_entry_for, AuthError, get_employee_by_token
 from app.core.time import utcnow
 from app.api.deps import get_current_employee
 from app.models.employee import Employee
@@ -11,13 +11,25 @@ from app.models.time_entry import TimeEntry
 
 router = APIRouter()
 
-@router.post("/clock-in", response_model=TokenOut)
+@router.post("/clock-in")
 def clock_in_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
+    """Clock in without logging in. Returns the employee and the clock-in time."""
     try:
-        employee, token = clock_in(db, clock_in_data.code, clock_in_data.pin)
-        return TokenOut(token=token, employee=EmployeeOut.model_validate(employee))
+        employee = clock_in(db, clock_in_data.code, clock_in_data.pin)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+    entry = open_entry_for(db, employee.id)
+    return {"employee": EmployeeOut.model_validate(employee), "clocked_in_at": entry.clocked_in_at}
+
+
+@router.post("/login", response_model=TokenOut)
+def login_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
+    """Log in to a station. The person must already be on the clock."""
+    try:
+        employee, token = login(db, clock_in_data.code, clock_in_data.pin)
+    except AuthError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return TokenOut(token=token, employee=EmployeeOut.model_validate(employee))
 
 
 @router.post("/preview")

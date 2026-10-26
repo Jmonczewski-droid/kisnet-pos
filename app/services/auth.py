@@ -39,18 +39,24 @@ def preview_clock_in(session: Session, code: str, pin: str) -> dict:
     return {"employee": employee, "on_clock": entry is not None, "clocked_in_at": entry.clocked_in_at if entry else None}
 
 
-def clock_in(session: Session, code: str, pin: str) -> Tuple[Employee, str]:
-    """Clock in (or sign back in if already on the clock). A new token is issued either way."""
+def clock_in(session: Session, code: str, pin: str) -> Employee:
+    """Start a shift. Clocking in does not log anyone in; login is a separate step."""
     employee = check_pin(session, code, pin)
+    if open_entry_for(session, employee.id):
+        raise AuthError(status.HTTP_409_CONFLICT, "Already clocked in")
+    session.add(TimeEntry(employee_id=employee.id, clocked_in_at=utcnow(), token_hash=None))
+    session.commit()
+    return employee
 
-    token = new_token()
+
+def login(session: Session, code: str, pin: str) -> Tuple[Employee, str]:
+    """Open a station session. Only possible while on the clock. Clocking stays unchanged."""
+    employee = check_pin(session, code, pin)
     entry = open_entry_for(session, employee.id)
-    if entry:
-        # Already on the clock: keep the original clock-in time, replace the token
-        entry.token_hash = hash_token(token)
-    else:
-        session.add(TimeEntry(employee_id=employee.id, clocked_in_at=utcnow(), token_hash=hash_token(token)))
-
+    if not entry:
+        raise AuthError(status.HTTP_409_CONFLICT, "Not clocked in. Clock in first.")
+    token = new_token()
+    entry.token_hash = hash_token(token)
     session.commit()
     return employee, token
 

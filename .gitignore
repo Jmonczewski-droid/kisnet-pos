@@ -69,3 +69,5 @@ config.local.py
 # Temporary files
 *.tmp
 *.temp
+# End-of-day exports
+exports/

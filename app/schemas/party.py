@@ -7,7 +7,7 @@ from app.core.constants import ALL_SEATS
 class PartyIn(BaseModel):
     seat: str = Field(..., min_length=1)
     party_name: str = Field(..., min_length=1)
-    party_size: int = Field(..., ge=1)
+    party_size: Optional[int] = Field(None, ge=1)  # required at tables; bar seats do not record a size
     server_id: Optional[int] = None
 
     @validator('seat')
@@ -25,6 +25,7 @@ class PartySummary(BaseModel):
     server_id: Optional[int]
     server_name: Optional[str]
     opened_at: str
+    drinks_ready_at: Optional[str] = None  # when the bar last bumped this party's drinks
 
     class Config:
         from_attributes = True

@@ -167,3 +167,35 @@ def test_admin_route_path_requirements(client, db, login):
     # Test POST /admin/clock-out/{employee_id} endpoint (admin only)
     response = client.post("/api/v1/admin/clock-out/1", headers=adm_headers)
     assert response.status_code in [200, 404]  # Could be 200 or 404 depending on state
+
+def test_on_clock_shows_whether_employee_is_logged_in(client, db, login):
+    def srv_entry():
+        rows = client.get("/api/v1/admin/on-clock", headers=login("ADM1")).json()
+        return next(row for row in rows if row["code"] == "SRV1")
+
+    login("SRV1")
+    assert srv_entry()["logged_in"] is True
+
+    from app.models import Employee
+    from app.services.auth import logout
+    logout(db, db.query(Employee).filter_by(code="SRV1").one())
+    assert srv_entry()["logged_in"] is False
+
+
+def test_day_stats_sales_labor_and_percentage(client, db, login):
+    from datetime import datetime, timezone
+    from app.models import Employee, TimeEntry
+    from app.services.stats import day_stats
+
+    # Clock SRV1 in for exactly two hours: 14:00-16:00 UTC on 2026-10-20 (10:00-12:00 Eastern)
+    srv = db.query(Employee).filter_by(code="SRV1").one()
+    db.add(TimeEntry(employee_id=srv.id, clocked_in_at=datetime(2026, 10, 20, 14, 0),
+                     clocked_out_at=datetime(2026, 10, 20, 16, 0)))
+    db.commit()
+
+    stats = day_stats(db, __import__("datetime").date(2026, 10, 20))
+    assert stats["labor_cents"] == 2000  # 2 hours at $10
+    assert stats["sales_cents"] == 0
+    assert stats["labor_pct"] is None
+    assert [row["hour"] for row in stats["hours"]] == ["10:00", "11:00"]
+    assert all(row["labor_cents"] == 1000 for row in stats["hours"])

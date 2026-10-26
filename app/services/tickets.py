@@ -61,6 +61,7 @@ def list_tickets(session: Session, user, track: str) -> List[Dict]:
                 "order_id": order.id,
                 "track": track,
                 "seat": order.party.seat,
+                "party_id": order.party.id,
                 "party_name": order.party.party_name,
                 "opened_at": min(item.sent_at for item in matching_items),
                 "items": [item_out(item) for item in matching_items],

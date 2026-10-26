@@ -8,7 +8,7 @@ function api(path, opts = {}) {
     };
     
     // Add Bearer token if available
-    const token = localStorage.getItem('kisnet.token');
+    const token = sessionStorage.getItem('kisnet.token');
     if (token) {
         defaultOpts.headers['Authorization'] = `Bearer ${token}`;
     }
@@ -18,7 +18,7 @@ function api(path, opts = {}) {
     return fetch(url, options)
         .then(response => {
             if (!response.ok) {
-                if (response.status === 401 && token && !path.includes('/auth/clock-in')) {
+                if (response.status === 401 && !path.includes('/auth/')) {
                     expireSession();
                 }
                 return response.json().then(err => {
@@ -56,7 +56,10 @@ function stationFor(role) {
 }
 
 function canVisit(role, path) {
-    return role === 'admin' ? path in SCREENS : (path === stationFor(role) || path === '/timecard');
+    if (role === 'admin') return path in SCREENS;
+    if (path === '/timecard') return true;
+    if (role === 'bartender') return path === '/bar' || path === '/barseats';
+    return path === stationFor(role);
 }
 
 // Idle sign-out: after this long with no input, return to login and resume the same page after signing in
@@ -64,15 +67,15 @@ const IDLE_LIMIT_MS = 5 * 60 * 1000;
 let lastActivity = Date.now();
 
 function expireSession() {
-    const token = localStorage.getItem('kisnet.token');
+    const token = sessionStorage.getItem('kisnet.token');
     if (token) {
         fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
     }
     const current = window.location.hash;
     if (current && current !== '#/login') {
-        localStorage.setItem('kisnet.returnTo', current);
+        sessionStorage.setItem('kisnet.returnTo', current);
     }
-    localStorage.removeItem('kisnet.token');
+    sessionStorage.removeItem('kisnet.token');
     state.employee = null;
     state.token = null;
     stopScreenTimers();
@@ -108,74 +111,38 @@ function fmtElapsed(iso) {
 }
 
 // Show create party form for empty seat
+// Bar seat (BAR1-BAR10): only a party name. The bartender is the server; no party size is needed.
 function showCreatePartyForm(root, seat) {
-    api('/api/v1/employees?role=server')
-        .then(servers => {
-            root.innerHTML = `
-                <div class="card">
-                    <h2>Create New Party</h2>
-                    <div class="form-group">
-                        <label for="party-name">Party Name</label>
-                        <input type="text" id="party-name" placeholder="Enter party name">
-                    </div>
-                    <div class="form-group">
-                        <label for="party-size">Party Size</label>
-                        <input type="number" id="party-size" min="1" value="2">
-                    </div>
-                    <div class="form-group">
-                        <label for="server-select">Assigned Server</label>
-                        <select id="server-select">
-                            ${servers.map(server => `<option value="${server.id}">${server.name}</option>`).join('')}
-                        </select>
-                    </div>
-                    <button id="create-party-btn" class="btn-large">Create Party</button>
-                    <button id="cancel-create-btn" class="btn-large">Cancel</button>
-                </div>
-            `;
-            
-            document.getElementById('create-party-btn').addEventListener('click', function() {
-                const partyName = document.getElementById('party-name').value;
-                const partySize = parseInt(document.getElementById('party-size').value);
-                const serverId = parseInt(document.getElementById('server-select').value);
-                
-                if (!partyName || !partySize || partySize < 1) {
-                    alert('Please enter a valid party name and size');
-                    return;
-                }
-                
-                api('/api/v1/parties', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        seat: seat,
-                        party_name: partyName,
-                        party_size: partySize,
-                        server_id: serverId
-                    })
-                })
-                .then(() => {
-                    // Refresh the host screen after successful creation
-                    renderHost(root);
-                })
-                .catch(error => {
-                    alert('Error creating party: ' + error.message);
-                    console.error('Error creating party:', error);
-                });
-            });
-            
-            document.getElementById('cancel-create-btn').addEventListener('click', function() {
-                // Refresh the host screen to show updated state
-                renderHost(root);
-            });
+    root.innerHTML = `
+        <div class="card">
+            <h2>Seat ${escapeHtml(seat)}</h2>
+            <div class="form-group">
+                <label for="party-name">Party Name</label>
+                <input type="text" id="party-name" placeholder="Enter party name">
+            </div>
+            <button id="create-party-btn" class="btn-large">Create Party</button>
+            <button id="cancel-create-btn" class="btn-large">Cancel</button>
+        </div>
+    `;
+
+    document.getElementById('create-party-btn').addEventListener('click', function() {
+        const partyName = document.getElementById('party-name').value.trim();
+        if (!partyName) {
+            alert('Enter a party name');
+            return;
+        }
+        api('/api/v1/parties', {
+            method: 'POST',
+            body: JSON.stringify({ seat: seat, party_name: partyName })
         })
-        .catch(error => {
-            root.innerHTML = `<div class="card"><h2>Error</h2><p>${error.message}</p></div>`;
-            console.error('Error loading servers:', error);
-        });
+        .then(() => renderBar(root))
+        .catch(error => alert('Could not create party: ' + error.message));
+    });
+
+    document.getElementById('cancel-create-btn').addEventListener('click', () => renderBar(root));
 }
 
-// Render party details (for both host and server screens)
-// Small pop-up beside a menu item asking to add it to the party's order
-function showAddItemPopover(button, item, party, root) {
+function showAddItemPopover(button, item, party, root, role = 'server') {
     closeItemPopover();
     const popover = document.createElement('div');
     popover.id = 'item-popover';
@@ -210,16 +177,16 @@ function showAddItemPopover(button, item, party, root) {
             alert('Quantity must be at least 1');
             return;
         }
-        api(`/api/v1/parties/${party.id}/items`, {
-            method: 'POST',
-            body: JSON.stringify({ items: [{ menu_item_id: parseInt(item.id, 10), qty, notes }] })
-        })
-        .then(() => {
-            closeItemPopover();
-            // Reload this party so the selection stays and the order shows the new line
-            return api(`/api/v1/parties/${party.id}`).then(updated => renderPartyDetails(root, updated, 'server'));
-        })
-        .catch(error => alert('Could not add item: ' + error.message));
+        draftFor(party.id).newLines.push({
+            menu_item_id: parseInt(item.id, 10),
+            name: item.name,
+            price_cents: item.price,
+            qty,
+            notes
+        });
+        closeItemPopover();
+        drawTicketList();
+        drawTicketEditor();
     });
 
     // Clicking anywhere outside the pop-up closes it
@@ -233,6 +200,50 @@ function showAddItemPopover(button, item, party, root) {
     popover.querySelector('#pop-qty').focus();
 }
 
+// Small pop-up beside an occupied bar seat
+function showSeatPopover(button, seat, root) {
+    closeItemPopover();
+    const popover = document.createElement('div');
+    popover.id = 'item-popover';
+    popover.className = 'item-popover';
+    popover.innerHTML = `
+        <p><strong>${escapeHtml(seat.seat)}</strong>: ${escapeHtml(seat.party.party_name)}</p>
+        <div class="item-popover-actions">
+            <button id="seat-place-order" class="btn-large">Place order</button>
+            <button id="seat-cancel" class="btn-large">Cancel</button>
+        </div>`;
+    document.body.appendChild(popover);
+    positionBeside(popover, button);
+
+    popover.querySelector('#seat-cancel').addEventListener('click', closeItemPopover);
+    popover.querySelector('#seat-place-order').addEventListener('click', () => {
+        closeItemPopover();
+        api(`/api/v1/parties/${seat.party.id}`)
+            .then(party => renderPartyDetails(root, party, 'bartender'))
+            .catch(error => alert('Could not open the order: ' + error.message));
+    });
+    watchOutsideClicks(popover, button);
+}
+
+// Place a pop-up to the right of the button, or to the left if there is no room
+function positionBeside(popover, button) {
+    const rect = button.getBoundingClientRect();
+    const width = popover.offsetWidth || 220;
+    const left = rect.right + 8 + width <= window.innerWidth ? rect.right + 8 : rect.left - width - 8;
+    popover.style.top = `${Math.max(8, rect.top)}px`;
+    popover.style.left = `${Math.max(8, left)}px`;
+}
+
+function watchOutsideClicks(popover, button) {
+    const outside = (event) => {
+        if (!popover.contains(event.target) && event.target !== button) {
+            closeItemPopover();
+        }
+    };
+    popover._outside = outside;
+    setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+}
+
 function closeItemPopover() {
     const popover = document.getElementById('item-popover');
     if (!popover) return;
@@ -240,15 +251,32 @@ function closeItemPopover() {
     popover.remove();
 }
 
-// ---- Server ticket panel: the current ticket, live, with edits on a selected line ----
+// ---- Order ticket panel. Nothing is saved until Send: new lines, changes and voids are staged in the browser ----
 
 const TICKET_REFRESH_MS = 3000;
 
+// Staged (unsent) changes, kept per party so they survive the panel refreshing
+function draftFor(partyId) {
+    window.KIS.drafts = window.KIS.drafts || {};
+    if (!window.KIS.drafts[partyId]) {
+        window.KIS.drafts[partyId] = { newLines: [], edits: {}, voids: {} };
+    }
+    return window.KIS.drafts[partyId];
+}
+
+function hasStagedChanges(draft) {
+    return draft.newLines.length > 0 || Object.keys(draft.edits).length > 0 || Object.values(draft.voids).some(Boolean);
+}
+
+function sameKey(a, b) {
+    return !!a && !!b && a.kind === b.kind && (a.kind === 'sent' ? a.id === b.id : a.index === b.index);
+}
+
 function showTicketPanel(party) {
-    window.KIS.ticket = window.KIS.ticket || { partyId: null, selectedId: null, party: null, interval: null };
+    window.KIS.ticket = window.KIS.ticket || { partyId: null, selectedKey: null, party: null, interval: null };
     const ticket = window.KIS.ticket;
     if (ticket.partyId !== party.id) {
-        ticket.selectedId = null;
+        ticket.selectedKey = null;
     }
     ticket.partyId = party.id;
     ticket.party = party;
@@ -261,16 +289,29 @@ function showTicketPanel(party) {
             <h3 id="ticket-title"></h3>
             <p id="ticket-status" class="status-note"></p>
             <div id="ticket-list"></div>
-            <div id="ticket-editor" class="ticket-editor"></div>`;
+            <div id="ticket-editor" class="ticket-editor"></div>
+            <div class="ticket-send-bar">
+                <p id="ticket-total" class="ticket-total"></p>
+                <button id="ticket-send" class="btn-large">Send</button>
+                ${['server', 'bartender'].includes(state.employee && state.employee.role)
+                    ? '<button id="ticket-payment" class="btn-large">Send to Payment</button>' : ''}
+            </div>`;
         document.body.appendChild(panel);
         document.body.classList.add('ticket-open');
+
         document.getElementById('ticket-list').addEventListener('click', (event) => {
             const row = event.target.closest('.ticket-row');
             if (!row) return;
-            ticket.selectedId = parseInt(row.dataset.itemId, 10);
+            const key = row.dataset.kind === 'sent'
+                ? { kind: 'sent', id: parseInt(row.dataset.id, 10) }
+                : { kind: 'new', index: parseInt(row.dataset.index, 10) };
+            window.KIS.ticket.selectedKey = key;
             drawTicketList();
             drawTicketEditor();
         });
+        document.getElementById('ticket-send').addEventListener('click', sendTicket);
+        const payment = document.getElementById('ticket-payment');
+        if (payment) payment.addEventListener('click', sendToPayment);
     }
 
     drawTicketList();
@@ -291,7 +332,7 @@ function stopTicketPanel() {
     document.body.classList.remove('ticket-open');
 }
 
-// Reload the party so the panel shows the latest ticket (keeps the selected line and any typing)
+// Reload the party's sent items. Staged changes are kept; only the server copy is refreshed.
 function refreshTicketPanel() {
     const ticket = window.KIS.ticket;
     if (!ticket || !ticket.partyId || !document.getElementById('ticket-panel')) return;
@@ -299,8 +340,8 @@ function refreshTicketPanel() {
         .then(party => {
             ticket.party = party;
             drawTicketList();
-            if (ticket.selectedId && !currentTicketItem()) {
-                ticket.selectedId = null;
+            if (ticket.selectedKey && !currentLine()) {
+                ticket.selectedKey = null;
                 drawTicketEditor();
             }
             setTicketStatus('');
@@ -313,103 +354,204 @@ function setTicketStatus(text) {
     if (status) status.textContent = text;
 }
 
-function ticketItems() {
+function sentItems() {
     const party = window.KIS.ticket && window.KIS.ticket.party;
     return party && party.open_order ? party.open_order.items : [];
 }
 
-function currentTicketItem() {
-    return ticketItems().find(item => item.id === window.KIS.ticket.selectedId) || null;
+// The line the user is working on, as it would be sent
+function currentLine() {
+    const ticket = window.KIS.ticket;
+    const key = ticket && ticket.selectedKey;
+    if (!key) return null;
+    const draft = draftFor(ticket.partyId);
+    if (key.kind === 'new') {
+        const line = draft.newLines[key.index];
+        return line ? { key, name: line.name, qty: line.qty, notes: line.notes, price: line.price_cents, locked: false, voided: false, isNew: true } : null;
+    }
+    const item = sentItems().find(entry => entry.id === key.id);
+    if (!item) return null;
+    const edit = draft.edits[item.id] || {};
+    return {
+        key,
+        name: item.name,
+        qty: edit.qty !== undefined ? edit.qty : item.qty,
+        notes: edit.notes !== undefined ? edit.notes : item.notes,
+        price: item.unit_price_cents,
+        locked: !!item.bumped || !!item.voided,
+        voided: !!item.voided,
+        isNew: false,
+        staged: !!draft.voids[item.id]
+    };
 }
 
 function drawTicketList() {
     const ticket = window.KIS.ticket;
     const list = document.getElementById('ticket-list');
-    const title = document.getElementById('ticket-title');
     if (!list || !ticket || !ticket.party) return;
+    const draft = draftFor(ticket.partyId);
+    const party = ticket.party;
+    document.getElementById('ticket-title').textContent = `Ticket: ${party.seat} - ${party.party_name}`;
 
-    title.textContent = `Ticket: ${ticket.party.seat} - ${ticket.party.party_name}`;
-    const items = ticketItems();
-    if (items.length === 0) {
-        list.innerHTML = '<p>No items on this ticket yet.</p>';
-        return;
-    }
-    list.innerHTML = items.map(item => {
-        const badges = [
-            item.voided ? 'VOID' : '',
-            !item.voided && item.bumped ? 'SENT' : '',
-            !item.voided && item.changed ? 'CHANGED' : ''
-        ].filter(Boolean);
-        return `
-            <div class="ticket-row ${item.id === ticket.selectedId ? 'selected' : ''} ${item.voided ? 'voided' : ''}" data-item-id="${item.id}">
-                <strong>${escapeHtml(item.name)}</strong> x${item.qty}
-                <span class="ticket-price">$${(item.line_total_cents / 100).toFixed(2)}</span>
-                ${badges.map(b => `<span class="ticket-badge">${b}</span>`).join('')}
-                ${item.notes ? `<div class="ticket-notes">${escapeHtml(item.notes)}</div>` : ''}
-            </div>`;
-    }).join('') + `<p class="ticket-total">Total: $${(ticketTotalCents() / 100).toFixed(2)}</p>`;
+    const rows = [];
+    let total = 0;
+    sentItems().forEach(item => {
+        const edit = draft.edits[item.id] || {};
+        const qty = edit.qty !== undefined ? edit.qty : item.qty;
+        const notes = edit.notes !== undefined ? edit.notes : item.notes;
+        const removedNow = !!draft.voids[item.id];
+        const voided = item.voided || removedNow;
+        const lineTotal = voided ? 0 : item.unit_price_cents * qty;
+        total += lineTotal;
+        const badges = [];
+        if (item.voided) badges.push('VOID');
+        else if (removedNow) badges.push('REMOVE ON SEND');
+        else if (item.bumped) badges.push('SENT');
+        if (!voided && (edit.qty !== undefined || edit.notes !== undefined)) badges.push('EDITED');
+        rows.push(ticketRow({ kind: 'sent', id: item.id }, item.name, qty, notes, lineTotal, badges, voided, ticket.selectedKey, !voided));
+    });
+    draft.newLines.forEach((line, index) => {
+        const lineTotal = line.price_cents * line.qty;
+        total += lineTotal;
+        rows.push(ticketRow({ kind: 'new', index }, line.name, line.qty, line.notes, lineTotal, ['NEW'], false, ticket.selectedKey));
+    });
+
+    list.innerHTML = rows.length ? rows.join('') : '<p>No items yet. Add items from the menu.</p>';
+    document.getElementById('ticket-total').textContent = `Total: $${(total / 100).toFixed(2)}`;
+    document.getElementById('ticket-send').disabled = !hasStagedChanges(draft);
 }
 
-function ticketTotalCents() {
-    return ticketItems().reduce((sum, item) => sum + item.line_total_cents, 0);
+function ticketRow(key, name, qty, notes, lineTotal, badges, voided, selectedKey, isSent = false) {
+    const attrs = key.kind === 'sent' ? `data-kind="sent" data-id="${key.id}"` : `data-kind="new" data-index="${key.index}"`;
+    return `
+        <div class="ticket-row ${sameKey(key, selectedKey) ? 'selected' : ''} ${voided ? 'voided' : ''} ${isSent ? 'sent' : ''}" ${attrs}>
+            <strong>${escapeHtml(name)}</strong> x${qty}
+            <span class="ticket-price">$${(lineTotal / 100).toFixed(2)}</span>
+            ${badges.map(b => `<span class="ticket-badge${b === 'SENT' ? ' sent-badge' : ''}">${b}</span>`).join('')}
+            ${notes ? `<div class="ticket-notes">${escapeHtml(notes)}</div>` : ''}
+        </div>`;
 }
 
-// Editor for the selected line. Only rebuilt on selection or after a save, so typing survives refreshes.
+// Editor for the selected line. Staging only: the change is kept in the browser until Send.
 function drawTicketEditor() {
     const editor = document.getElementById('ticket-editor');
     if (!editor) return;
-    const item = currentTicketItem();
-    if (!item) {
-        editor.innerHTML = '<p class="ticket-hint">Select an item to change it.</p>';
+    const line = currentLine();
+    if (!line) {
+        editor.innerHTML = '<p class="ticket-hint">Select an item to change it before you send.</p>';
         return;
     }
-    const locked = item.voided || item.bumped;
+    const disabled = line.locked ? 'disabled' : '';
+    const removeLabel = line.staged ? 'Keep item' : (line.isNew ? 'Remove' : 'Remove on send');
     editor.innerHTML = `
-        <h4>${escapeHtml(item.name)}</h4>
-        ${locked ? `<p class="status-note">${item.voided ? 'Voided' : 'Already sent to the kitchen or bar; it cannot be changed.'}</p>` : ''}
+        <h4>${escapeHtml(line.name)}</h4>
+        ${line.locked ? '<p class="status-note">Already at the kitchen or bar, so it cannot be changed.</p>' : ''}
         <div class="qty-row">
-            <button id="tk-dec" ${locked ? 'disabled' : ''}>-</button>
-            <input id="tk-qty" type="number" min="1" value="${item.qty}" ${locked ? 'disabled' : ''}>
-            <button id="tk-inc" ${locked ? 'disabled' : ''}>+</button>
+            <button id="tk-dec" ${disabled}>-</button>
+            <input id="tk-qty" type="number" min="1" value="${line.qty}" ${disabled}>
+            <button id="tk-inc" ${disabled}>+</button>
         </div>
-        <input id="tk-notes" type="text" placeholder="Notes" value="${escapeHtml(item.notes || '')}" ${locked ? 'disabled' : ''}>
+        <input id="tk-notes" type="text" placeholder="Notes" value="${escapeHtml(line.notes || '')}" ${disabled}>
         <div class="ticket-editor-actions">
-            <button id="tk-save" class="btn-large" ${locked ? 'disabled' : ''}>Save</button>
-            <button id="tk-void" class="btn-large" ${locked ? 'disabled' : ''}>Void item</button>
+            <button id="tk-update" class="btn-large" ${disabled}>Update line</button>
+            <button id="tk-remove" class="btn-large" ${line.locked ? 'disabled' : ''}>${removeLabel}</button>
         </div>`;
-    if (locked) return;
 
     const qtyInput = document.getElementById('tk-qty');
-    document.getElementById('tk-dec').addEventListener('click', () => {
-        qtyInput.value = Math.max(1, (parseInt(qtyInput.value, 10) || 1) - 1);
-    });
-    document.getElementById('tk-inc').addEventListener('click', () => {
-        qtyInput.value = (parseInt(qtyInput.value, 10) || 0) + 1;
-    });
-    document.getElementById('tk-save').addEventListener('click', () => {
-        const qty = parseInt(qtyInput.value, 10);
-        if (!(qty >= 1)) {
-            alert('Quantity must be at least 1');
-            return;
+    if (!line.locked) {
+        document.getElementById('tk-dec').addEventListener('click', () => {
+            qtyInput.value = Math.max(1, (parseInt(qtyInput.value, 10) || 1) - 1);
+        });
+        document.getElementById('tk-inc').addEventListener('click', () => {
+            qtyInput.value = (parseInt(qtyInput.value, 10) || 0) + 1;
+        });
+        document.getElementById('tk-update').addEventListener('click', () => updateSelectedLine(line));
+    }
+    document.getElementById('tk-remove').addEventListener('click', () => toggleSelectedLine(line));
+}
+
+function updateSelectedLine(line) {
+    const qty = parseInt(document.getElementById('tk-qty').value, 10);
+    const notes = document.getElementById('tk-notes').value.trim();
+    if (!(qty >= 1)) {
+        alert('Quantity must be at least 1');
+        return;
+    }
+    const draft = draftFor(window.KIS.ticket.partyId);
+    if (line.isNew) {
+        draft.newLines[line.key.index].qty = qty;
+        draft.newLines[line.key.index].notes = notes || null;
+    } else {
+        draft.edits[line.key.id] = { qty, notes };
+    }
+    drawTicketList();
+    drawTicketEditor();
+}
+
+function toggleSelectedLine(line) {
+    const ticket = window.KIS.ticket;
+    const draft = draftFor(ticket.partyId);
+    if (line.isNew) {
+        draft.newLines.splice(line.key.index, 1);
+        ticket.selectedKey = null;
+    } else {
+        // Removing a sent line is staged too; "Keep item" undoes it before Send
+        if (draft.voids[line.key.id]) {
+            delete draft.voids[line.key.id];
+        } else {
+            draft.voids[line.key.id] = true;
         }
-        api(`/api/v1/order-items/${item.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ qty, notes: document.getElementById('tk-notes').value.trim() })
+    }
+    drawTicketList();
+    drawTicketEditor();
+}
+
+// Send to Payment: closes the table (payment is assumed accepted). The table's order is completed.
+function sendToPayment() {
+    const ticket = window.KIS.ticket;
+    const draft = draftFor(ticket.partyId);
+    if (hasStagedChanges(draft) && !confirm('Changes that have not been sent will be lost. Send to payment anyway?')) {
+        return;
+    }
+    const isBar = state.employee.role === 'bartender';
+    api(`/api/v1/parties/${ticket.partyId}/close`, { method: 'POST' })
+        .then(() => {
+            window.KIS.drafts[ticket.partyId] = null;
+            stopTicketPanel();
+            ticket.partyId = null;
+            goTo(isBar ? '/barseats' : '/server');
         })
-        .then(() => refreshTicketPanel())
-        .catch(error => alert('Could not save change: ' + error.message));
-    });
-    document.getElementById('tk-void').addEventListener('click', () => {
-        if (!confirm(`Void ${item.name}?`)) return;
-        api(`/api/v1/order-items/${item.id}`, { method: 'DELETE' })
-            .then(() => refreshTicketPanel())
-            .catch(error => alert('Could not void item: ' + error.message));
-    });
+        .catch(error => alert('Could not send to payment: ' + error.message));
+}
+
+// Send: everything staged goes to the server in one request, then to the kitchen and bar
+function sendTicket() {
+    const ticket = window.KIS.ticket;
+    const draft = draftFor(ticket.partyId);
+    if (!hasStagedChanges(draft)) return;
+
+    const body = {
+        items: draft.newLines.map(line => ({ menu_item_id: line.menu_item_id, qty: line.qty, notes: line.notes || null })),
+        updates: Object.entries(draft.edits).map(([id, edit]) => ({ item_id: parseInt(id, 10), qty: edit.qty, notes: edit.notes })),
+        voids: Object.entries(draft.voids).filter(([, removed]) => removed).map(([id]) => parseInt(id, 10))
+    };
+
+    api(`/api/v1/parties/${ticket.partyId}/send`, { method: 'POST', body: JSON.stringify(body) })
+        .then(() => {
+            draft.newLines = [];
+            draft.edits = {};
+            draft.voids = {};
+            ticket.selectedKey = null;
+            setTicketStatus('Sent to the kitchen and bar.');
+            return refreshTicketPanel();
+        })
+        .catch(error => alert('Could not send: ' + error.message));
 }
 
 function renderPartyDetails(root, party, role) {
     const isHostScreen = role === 'host';
-    const isServerScreen = role === 'server';
+    const isBarScreen = role === 'bartender';
+    const isServerScreen = role === 'server' || isBarScreen;
     
     // First get the menu items
     api('/api/v1/menu')
@@ -424,6 +566,7 @@ function renderPartyDetails(root, party, role) {
             
             const partyDetails = `
                 <div class="card" id="party-details-card">
+                    ${isBarScreen ? '<button id="back-to-bar" class="btn-large">Back to bar seats</button>' : ''}
                     <h2>Party Details</h2>
                     <p><strong>Seat:</strong> ${party.seat}</p>
                     <p><strong>Party Name:</strong> ${party.party_name}</p>
@@ -434,9 +577,6 @@ function renderPartyDetails(root, party, role) {
                     
                     ${isHostScreen && party.closed_at ? 
                         `<p><strong>Closed:</strong> ${fmtDate(party.closed_at)}</p>` : ''}
-                    
-                    ${isHostScreen && !party.closed_at ? 
-                        `<button class="btn-large" id="close-table-btn">Close Table</button>` : ''}
                         
                     ${party.open_order && !isServerScreen ? `
                         <h3>Current Order</h3>
@@ -455,10 +595,6 @@ function renderPartyDetails(root, party, role) {
                                 `;
                             }).join('')}
                         </div>
-                    ` : ''}
-                    
-                    ${isServerScreen && party.open_order ? `
-                        <button class="btn-large" id="complete-order-btn">Complete Order</button>
                     ` : ''}
                     
                     ${isServerScreen && !party.closed_at ? `
@@ -492,44 +628,16 @@ function renderPartyDetails(root, party, role) {
             }
             
             // Add event listeners for host screen buttons
-            if (isHostScreen && !party.closed_at) {
-                document.getElementById('close-table-btn').addEventListener('click', function() {
-                    api(`/api/v1/parties/${party.id}/close`, { method: 'POST' })
-                        .then(() => {
-                            // Refresh the host screen after successful close
-                            renderHost(root);
-                        })
-                        .catch(error => {
-                            if (error.message.includes('409')) {
-                                alert('Cannot close table: an open order exists on this table.');
-                            } else {
-                                alert('Error closing table: ' + error.message);
-                            }
-                            console.error('Error closing table:', error);
-                        });
-                });
-            }
             
-            // Add event listeners for server screen buttons
-            if (isServerScreen && party.open_order) {
-                document.getElementById('complete-order-btn').addEventListener('click', function() {
-                    api(`/api/v1/parties/${party.id}/complete`, { method: 'POST' })
-                        .then(() => {
-                            // Refresh the server screen after successful completion
-                            renderServer(root);
-                        })
-                        .catch(error => {
-                            alert('Error completing order: ' + error.message);
-                            console.error('Error completing order:', error);
-                        });
-                });
+            if (isBarScreen) {
+                document.getElementById('back-to-bar').addEventListener('click', () => renderBar(root));
             }
-            
+
             // Clicking a menu item asks, in a small pop-up beside it, whether to add it
             if (isServerScreen && !party.closed_at) {
                 document.querySelectorAll('.menu-item-btn').forEach(button => {
                     button.addEventListener('click', function() {
-                        showAddItemPopover(this, { id: this.dataset.itemId, name: this.dataset.name }, party, root);
+                        showAddItemPopover(this, { id: this.dataset.itemId, name: this.dataset.name, price: parseInt(this.dataset.price, 10) }, party, root, role);
                     });
                 });
             }
@@ -543,7 +651,7 @@ function renderLogin(root) {
     root.innerHTML = `
         <div class="login-container">
             <div class="card">
-                <h2>KISnet POS: Clock In</h2>
+                <h2>KISnet POS</h2>
                 <div class="form-group">
                     <label for="employee-code">Employee Code</label>
                     <input type="text" id="employee-code" placeholder="e.g. HOST1">
@@ -552,32 +660,46 @@ function renderLogin(root) {
                     <label for="pin">PIN</label>
                     <input type="password" id="pin" placeholder="Enter your PIN">
                 </div>
+                <p id="login-message" class="status-note"></p>
                 <button id="clock-in-btn" class="btn-large">Clock In</button>
+                <button id="log-in-btn" class="btn-large">Log In</button>
             </div>
         </div>
     `;
-    
-    document.getElementById('clock-in-btn').addEventListener('click', handleLogin);
+
+    document.getElementById('clock-in-btn').addEventListener('click', handleClockIn);
+    document.getElementById('log-in-btn').addEventListener('click', handleLogIn);
 }
 
-function handleLogin() {
-    const code = document.getElementById('employee-code').value;
+function loginCredentials() {
+    const code = document.getElementById('employee-code').value.trim();
     const pin = document.getElementById('pin').value;
-
     if (!code || !pin) {
-        alert('Please enter both employee code and PIN');
-        return;
+        setLoginMessage('Enter your employee code and PIN.');
+        return null;
     }
+    return { code, pin };
+}
 
-    api('/auth/preview', { method: 'POST', body: JSON.stringify({ code, pin }) })
+function setLoginMessage(text) {
+    const message = document.getElementById('login-message');
+    if (message) message.textContent = text;
+}
+
+// Clock In: records the shift. It does not log anyone in.
+function handleClockIn() {
+    const credentials = loginCredentials();
+    if (!credentials) return;
+
+    api('/auth/preview', { method: 'POST', body: JSON.stringify(credentials) })
         .then(preview => {
-            // Already on the clock: sign straight in. Otherwise confirm the clock in first.
             if (preview.on_clock) {
-                return completeClockIn(code, pin);
+                setLoginMessage(`${preview.employee.name} is already clocked in.`);
+                return;
             }
-            confirmClockIn(preview, code, pin);
+            confirmClockIn(preview, credentials);
         })
-        .catch(error => alert('Login failed: ' + error.message));
+        .catch(error => setLoginMessage(error.message));
 }
 
 function roleLabel(role) {
@@ -585,7 +707,7 @@ function roleLabel(role) {
 }
 
 // Pop-up asking the person to confirm their clock in
-function confirmClockIn(preview, code, pin) {
+function confirmClockIn(preview, credentials) {
     const employee = preview.employee;
     const body = openModal('Confirm clock in', `
         <p><strong>Name:</strong> ${escapeHtml(employee.name)}</p>
@@ -599,23 +721,33 @@ function confirmClockIn(preview, code, pin) {
     body.querySelector('#cancel-clock-in-btn').addEventListener('click', closeModal);
     body.querySelector('#confirm-clock-in-btn').addEventListener('click', () => {
         closeModal();
-        completeClockIn(code, pin).catch(error => alert('Login failed: ' + error.message));
+        api('/auth/clock-in', { method: 'POST', body: JSON.stringify(credentials) })
+            .then(result => {
+                setLoginMessage(`${result.employee.name} clocked in at ${fmtDate(result.clocked_in_at)}. Log in to open your station.`);
+                document.getElementById('pin').value = '';
+            })
+            .catch(error => setLoginMessage(error.message));
     });
 }
 
-// Clock in (or sign back in) and open the station, or the page the user was on
-function completeClockIn(code, pin) {
-    return api('/auth/clock-in', { method: 'POST', body: JSON.stringify({ code, pin }) })
+// Log In: opens a station session. Only works for someone already on the clock.
+function handleLogIn() {
+    const credentials = loginCredentials();
+    if (!credentials) return;
+
+    api('/auth/login', { method: 'POST', body: JSON.stringify(credentials) })
         .then(data => {
-            localStorage.setItem('kisnet.token', data.token);
+            sessionStorage.setItem('kisnet.token', data.token);
             state.token = data.token;
             state.employee = data.employee;
 
-            const returnTo = localStorage.getItem('kisnet.returnTo');
-            localStorage.removeItem('kisnet.returnTo');
+            // Return to the page the user was on before sign-out, if their role may see it
+            const returnTo = sessionStorage.getItem('kisnet.returnTo');
+            sessionStorage.removeItem('kisnet.returnTo');
             const role = data.employee.role;
             goTo(returnTo && canVisit(role, returnTo.slice(1)) ? returnTo.slice(1) : stationFor(role));
-        });
+        })
+        .catch(error => setLoginMessage(error.message));
 }
 
 function renderCommand(root) {
@@ -634,7 +766,9 @@ function renderCommand(root) {
                     <td>${escapeHtml(emp.role)}</td>
                     <td>${fmtDate(emp.clocked_in_at)}</td>
                     <td>${fmtElapsed(emp.clocked_in_at)}</td>
-                    <td><button class="btn-large clock-out-btn" data-employee-id="${emp.id}">Clock Out</button></td>
+                    <td>${emp.logged_in
+                        ? '<button class="btn-large clock-out-btn" data-employee-id="' + emp.id + '">Clock Out</button>'
+                        : '<em>Logged out</em>'}</td>
                 </tr>`).join('');
 
             root.innerHTML = `
@@ -656,8 +790,10 @@ function renderCommand(root) {
                             </thead>
                             <tbody>${rows}</tbody>
                         </table>`}
+                    <div id="stats-block"></div>
                 </div>`;
 
+            loadDayStats();
             root.querySelectorAll('.clock-out-btn').forEach(button => {
                 button.addEventListener('click', function() {
                     const employeeId = this.dataset.employeeId;
@@ -692,6 +828,110 @@ function renderCommand(root) {
             renderCommand(root);
         }
     }, 10000);
+}
+
+// Daily Summary (admin): totals for one business day, items by popularity, and the End of Day export
+function renderSummary(root) {
+    root.innerHTML = `
+        <div class="card">
+            <h2>Daily Summary</h2>
+            <div class="week-nav">
+                <label for="sum-date">Business day</label>
+                <input type="date" id="sum-date" value="${isoDay(new Date())}">
+                <button id="sum-show" class="btn-large">Show</button>
+                <button id="sum-end" class="btn-large">End of Day</button>
+            </div>
+            <p id="sum-status" class="status-note"></p>
+            <div id="sum-body"></div>
+        </div>`;
+    document.getElementById('sum-show').addEventListener('click', loadSummary);
+    document.getElementById('sum-end').addEventListener('click', confirmEndOfDay);
+    loadSummary();
+}
+
+function loadSummary() {
+    const day = document.getElementById('sum-date').value;
+    const body = document.getElementById('sum-body');
+    Promise.all([
+        api(`/api/v1/reports/summary?day=${day}`),
+        api(`/api/v1/reports/items?day=${day}`)
+    ])
+    .then(([summary, items]) => {
+        const money = cents => `$${(cents / 100).toFixed(2)}`;
+        const itemTable = (title, rows) => `
+            <div>
+                <h3>${title}</h3>
+                <table class="data-table">
+                    <thead><tr><th>Item</th><th>Sold</th><th>Sales</th></tr></thead>
+                    <tbody>${rows.length === 0 ? '<tr><td colspan="3">None sold</td></tr>' : rows.map(row => `
+                        <tr><td>${escapeHtml(row.name)}</td><td>${row.qty}</td><td>${money(row.sales_cents)}</td></tr>`).join('')}</tbody>
+                </table>
+            </div>`;
+        body.innerHTML = `
+            <div class="stat-cards">
+                <div class="stat-card"><span>Total sales</span><strong>${money(summary.total_sales_cents)}</strong></div>
+                <div class="stat-card"><span>Tickets</span><strong>${summary.ticket_count}</strong></div>
+                <div class="stat-card"><span>Average ticket</span><strong>${money(summary.average_ticket_cents)}</strong></div>
+            </div>
+            <div class="item-columns">
+                ${itemTable('Food', items.food)}
+                ${itemTable('Drinks', items.drinks)}
+            </div>`;
+    })
+    .catch(error => {
+        body.innerHTML = `<p class="status-note">Could not load the summary (${escapeHtml(error.message)}).</p>`;
+    });
+}
+
+function confirmEndOfDay() {
+    const day = document.getElementById('sum-date').value;
+    const body = openModal('End of day', `
+        <p>Export the sales for <strong>${escapeHtml(day)}</strong> to files on the server?</p>
+        <button id="eod-confirm" class="btn-large">Export</button>
+        <button id="eod-cancel" class="btn-large">Cancel</button>`);
+    body.querySelector('#eod-cancel').addEventListener('click', closeModal);
+    body.querySelector('#eod-confirm').addEventListener('click', () => {
+        closeModal();
+        api(`/api/v1/admin/end-of-day?date=${day}`, { method: 'POST' })
+            .then(result => {
+                const weekly = result.weekly ? ` Weekly report ${result.weekly.start} to ${result.weekly.end} written to ${result.weekly.folder}.` : '';
+                document.getElementById('sum-status').textContent =
+                    `Exported ${result.date} to ${result.folder}: summary.csv, item_sales.csv, hourly.csv.${weekly}`;
+            })
+            .catch(error => alert('End of day failed: ' + error.message));
+    });
+}
+
+// Command Center: current sales, active tickets, and sales / labor / labor % by hour
+function loadDayStats() {
+    const block = document.getElementById('stats-block');
+    if (!block) return;
+    api('/api/v1/admin/stats')
+        .then(stats => {
+            const money = cents => `$${(cents / 100).toFixed(2)}`;
+            const pct = value => value === null ? '-' : `${value.toFixed(1)}%`;
+            block.innerHTML = `
+                <div class="stat-cards">
+                    <div class="stat-card"><span>Sales today</span><strong>${money(stats.sales_cents)}</strong></div>
+                    <div class="stat-card"><span>Active tickets</span><strong>${stats.active_tickets}</strong></div>
+                    <div class="stat-card"><span>Labor today</span><strong>${money(stats.labor_cents)}</strong></div>
+                    <div class="stat-card"><span>Labor %</span><strong>${pct(stats.labor_pct)}</strong></div>
+                </div>
+                <h3>By hour</h3>
+                <table class="data-table">
+                    <thead><tr><th>Hour</th><th>Sales</th><th>Labor</th><th>Labor %</th></tr></thead>
+                    <tbody>${stats.hours.length === 0 ? '<tr><td colspan="4">No activity yet</td></tr>' : stats.hours.map(row => `
+                        <tr>
+                            <td>${row.hour}</td>
+                            <td>${money(row.sales_cents)}</td>
+                            <td>${money(row.labor_cents)}</td>
+                            <td>${pct(row.labor_pct)}</td>
+                        </tr>`).join('')}</tbody>
+                </table>`;
+        })
+        .catch(error => {
+            block.innerHTML = `<p class="status-note">Could not load sales (${escapeHtml(error.message)}).</p>`;
+        });
 }
 
 // Reports implementation
@@ -912,7 +1152,7 @@ function closeModal() {
 function renderHost(root) {
     Promise.all([api('/api/v1/seats'), api('/api/v1/employees?role=server')])
         .then(([seats, servers]) => {
-            const tables = seats.filter(seat => !seat.seat.startsWith('Z'));
+            const tables = seats.filter(seat => !seat.seat.startsWith('BAR'));
             root.innerHTML = `
                 <div class="card">
                     <h2>Host Station - Tables</h2>
@@ -1016,18 +1256,9 @@ function showOccupiedTable(root, partyId) {
                         <tbody>${lines || '<tr><td colspan="3">No items</td></tr>'}</tbody>
                         <tfoot><tr><th colspan="2">Current check</th><th>$${(order.total_cents / 100).toFixed(2)}</th></tr></tfoot>
                     </table>` : '<p><strong>Current check:</strong> $0.00</p>'}
-                <button id="close-table-btn" class="btn-large">Close table</button>
                 <button id="done-table-btn" class="btn-large">Done</button>
             `);
             body.querySelector('#done-table-btn').addEventListener('click', closeModal);
-            body.querySelector('#close-table-btn').addEventListener('click', () => {
-                api(`/api/v1/parties/${party.id}/close`, { method: 'POST' })
-                    .then(() => {
-                        closeModal();
-                        renderHost(root);
-                    })
-                    .catch(error => alert('Could not close table: ' + error.message));
-            });
         })
         .catch(error => alert('Error loading table: ' + error.message));
 }
@@ -1078,8 +1309,8 @@ function renderServer(root) {
 function renderBar(root) {
     api('/api/v1/seats')
         .then(seats => {
-            // Filter for bar seats only (Z1-Z10)
-            const barSeats = seats.filter(seat => seat.seat.startsWith('Z'));
+            // Bar seats only (BAR1-BAR10)
+            const barSeats = seats.filter(seat => seat.seat.startsWith('BAR'));
             
             root.innerHTML = `
                 <div class="card">
@@ -1090,49 +1321,145 @@ function renderBar(root) {
                                 class="button-card"
                                 data-seat="${seat.seat}" 
                                 data-occupied="${!!seat.party}"
-                                ${seat.party ? 'disabled' : ''}
                             >
                                 ${seat.seat}<br>
-                                ${seat.party ? seat.party.party_name + '<br>' + fmtElapsed(seat.party.opened_at) : 'Empty'}
+                                ${seat.party ? escapeHtml(seat.party.party_name) + '<br>' + fmtElapsed(seat.party.opened_at) : 'Empty'}
                             </button>
                         `).join('')}
                     </div>
-                </div>
-                <div id="bar-tickets-container">
-                    <h3>Bar Tickets</h3>
-                    <div id="bar-tickets-list"></div>
                 </div>
             `;
             
             // Add event listeners to buttons
             document.querySelectorAll('#bar-seats-grid button').forEach(button => {
                 button.addEventListener('click', function() {
-                    const seat = this.dataset.seat;
-                    const occupied = this.dataset.occupied === 'true';
-                    
-                    if (occupied) {
-                        // Show party details for occupied seat
-                        api(`/api/v1/parties/${seat.party.id}`)
-                            .then(party => {
-                                renderPartyDetails(root, party, 'bartender');
-                            })
-                            .catch(error => {
-                                alert('Error loading party details: ' + error.message);
-                            });
+                    const seatCode = this.dataset.seat;
+                    const seat = barSeats.find(item => item.seat === seatCode);
+                    if (seat.party) {
+                        // Occupied seat: a small pop-up beside it to place an order
+                        showSeatPopover(this, seat, root);
                     } else {
-                        // Show create party form for empty seat
-                        showCreatePartyForm(root, seat);
+                        // Empty seat: name the party
+                        showCreatePartyForm(root, seatCode);
                     }
                 });
             });
             
-            // Load bar tickets
-            loadBarTickets();
         })
         .catch(error => {
             root.innerHTML = `<div class="card"><h2>Error</h2><p>${error.message}</p></div>`;
             console.error('Error loading bar seats:', error);
         });
+}
+
+// Drink queue: one card per party, all of its drinks together, oldest first
+function renderDrinkQueue(root) {
+    root.innerHTML = `
+        <div class="card">
+            <h2>Drink Queue</h2>
+            <p id="queue-status" class="status-note"></p>
+            <div id="drink-queue" class="queue-grid"></div>
+        </div>`;
+    loadDrinkQueue();
+    if (window.KIS.queueInterval) {
+        clearInterval(window.KIS.queueInterval);
+    }
+    window.KIS.queueInterval = setInterval(loadDrinkQueue, 2000);
+}
+
+function loadDrinkQueue() {
+    const box = document.getElementById('drink-queue');
+    if (!box) return;
+    // Remember where each ticket was, so the rest can slide over when one is bumped
+    const before = {};
+    box.querySelectorAll('.queue-card').forEach(card => {
+        before[card.dataset.orderId] = card.getBoundingClientRect().left;
+    });
+
+    api('/api/v1/tickets?track=bar')
+        .then(tickets => {
+            document.getElementById('queue-status').textContent = '';
+            if (tickets.length === 0) {
+                box.innerHTML = '<p>No drinks waiting.</p>';
+                return;
+            }
+            box.innerHTML = tickets.map(ticket => `
+                <div class="card ticket-card queue-card" data-order-id="${ticket.order_id}">
+                    <p><strong>${escapeHtml(ticket.seat)}</strong> - ${escapeHtml(ticket.party_name)}</p>
+                    <p>Waiting: ${fmtElapsed(ticket.opened_at)}</p>
+                    ${ticket.items.map(item => `
+                        <div class="order-item-card">
+                            <p><strong>${escapeHtml(item.name)}</strong> x${item.qty}${item.notes ? ' | ' + escapeHtml(item.notes) : ''}</p>
+                            ${item.voided ? '<span class="voided-badge">VOID</span>' : ''}
+                        </div>`).join('')}
+                    <button class="btn-large drinks-ready-btn" data-order-id="${ticket.order_id}">Drinks ready</button>
+                    ${ticket.seat.startsWith('BAR')
+                        ? `<button class="btn-large queue-payment-btn" data-party-id="${ticket.party_id}">Send to Payment</button>`
+                        : '<p class="ticket-hint">Table: sent to payment by the server</p>'}
+                </div>`).join('');
+
+            // Slide each remaining ticket from where it was to its new place
+            box.querySelectorAll('.queue-card').forEach(card => {
+                const previous = before[card.dataset.orderId];
+                if (previous === undefined) return;
+                const shift = previous - card.getBoundingClientRect().left;
+                if (Math.abs(shift) < 1) return;
+                card.style.transition = 'none';
+                card.style.transform = `translateX(${shift}px)`;
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    card.style.transition = 'transform 0.45s ease';
+                    card.style.transform = '';
+                }));
+            });
+
+            box.querySelectorAll('.drinks-ready-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    api(`/api/v1/tickets/${button.dataset.orderId}/bar/bump`, { method: 'POST' })
+                        .then(loadDrinkQueue)
+                        .catch(error => alert('Could not mark drinks ready: ' + error.message));
+                });
+            });
+            box.querySelectorAll('.queue-payment-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    api(`/api/v1/parties/${button.dataset.partyId}/close`, { method: 'POST' })
+                        .then(loadDrinkQueue)
+                        .catch(error => alert('Could not send to payment: ' + error.message));
+                });
+            });
+        })
+        .catch(error => {
+            document.getElementById('queue-status').textContent = `Could not load the queue (${error.message}). Retrying...`;
+        });
+}
+
+// Server notice: drinks for one of the server's tables are ready. Dismissed per ready time.
+function checkDrinkAlerts() {
+    if (!state.employee || state.employee.role !== 'server') {
+        const banner = document.getElementById('drink-alerts');
+        if (banner) banner.innerHTML = '';
+        return;
+    }
+    api('/api/v1/parties?open=true')
+        .then(parties => {
+            const banner = document.getElementById('drink-alerts');
+            if (!banner) return;
+            const dismissed = JSON.parse(sessionStorage.getItem('kisnet.dismissedDrinks') || '{}');
+            const ready = parties.filter(party => party.drinks_ready_at && dismissed[party.id] !== party.drinks_ready_at);
+            banner.innerHTML = ready.map(party => `
+                <div class="drink-alert">
+                    <strong>Drinks ready:</strong> ${escapeHtml(party.seat)} - ${escapeHtml(party.party_name)}
+                    <button class="btn-large dismiss-drink-alert" data-party="${party.id}" data-ready="${escapeHtml(party.drinks_ready_at)}">Dismiss</button>
+                </div>`).join('');
+            banner.querySelectorAll('.dismiss-drink-alert').forEach(button => {
+                button.addEventListener('click', () => {
+                    const seen = JSON.parse(sessionStorage.getItem('kisnet.dismissedDrinks') || '{}');
+                    seen[button.dataset.party] = button.dataset.ready;
+                    sessionStorage.setItem('kisnet.dismissedDrinks', JSON.stringify(seen));
+                    checkDrinkAlerts();
+                });
+            });
+        })
+        .catch(() => {});
 }
 
 // Load and display bar tickets
@@ -1186,7 +1513,7 @@ function loadBarTickets() {
 // Kitchen screen implementation
 function renderKitchen(root) {
     // Define the three columns for kitchen view
-    const categories = ['appetizers', 'hot', 'cold'];
+    const categories = ['cold', 'appetizers', 'hot'];
     
     root.innerHTML = `
         <div class="card">
@@ -1194,8 +1521,8 @@ function renderKitchen(root) {
             <div class="grid-buttons" id="kitchen-columns">
                 ${categories.map(category => `
                     <div class="kitchen-column">
-                        <h3>${category.charAt(0).toUpperCase() + category.slice(1)}</h3>
-                        <div id="${category}-tickets"></div>
+                        <h3>${category === 'appetizers' ? 'Apps' : category.charAt(0).toUpperCase() + category.slice(1)}</h3>
+                        <div id="${category}-tickets" class="ticket-stack"></div>
                     </div>
                 `).join('')}
             </div>
@@ -1229,7 +1556,6 @@ function loadKitchenTickets(track) {
             
             // Display tickets in a grid
             container.innerHTML = `
-                <div class="grid-buttons">
                     ${tickets.map(ticket => `
                         <div class="card ticket-card">
                             <p><strong>Seat:</strong> ${ticket.seat}</p>
@@ -1253,7 +1579,6 @@ function loadKitchenTickets(track) {
                             <button class="btn-large bump-btn" data-order-id="${ticket.order_id}" data-track="${track}">Bump</button>
                         </div>
                     `).join('')}
-                </div>
             `;
             
             // Add event listeners to bump buttons
@@ -1286,9 +1611,11 @@ const SCREENS = {
     '/reports': renderReports,
     '/host': renderHost,
     '/server': renderServer,
-    '/bar': renderBar,
+    '/bar': renderDrinkQueue,
+    '/barseats': renderBar,
     '/kitchen': renderKitchen,
     '/timecard': renderTimeCard,
+    '/summary': renderSummary,
     '/home': renderHome
 };
 
@@ -1297,7 +1624,7 @@ function renderHome(root) {
     root.innerHTML = `
         <div class="card">
             <h2>KISnet POS</h2>
-            <p>Welcome. Use <strong>Login</strong> to clock in and open your station. Your hours and Clock Out are on the <strong>Time Card</strong>.</p>
+            <p>Welcome. Use <strong>Clock In</strong> on the login page to start your shift, then <strong>Log In</strong> to open your station. Clock Out is on the <strong>Time Card</strong>.</p>
             <button id="home-login-btn" class="btn-large">Go to Login</button>
         </div>`;
     root.querySelector('#home-login-btn').addEventListener('click', () => goTo('/login'));
@@ -1401,7 +1728,7 @@ function buildTimeCard(root, card, summary) {
     wrap.querySelector('#tc-prev').addEventListener('click', () => { timecardWeek = shiftWeek(card.week_start, -1); renderTimeCard(root); });
     wrap.querySelector('#tc-next').addEventListener('click', () => { timecardWeek = shiftWeek(card.week_start, 1); renderTimeCard(root); });
     wrap.querySelector('#tc-this').addEventListener('click', () => { timecardWeek = null; renderTimeCard(root); });
-    wrap.querySelector('#tc-clock-out').addEventListener('click', clockOut);
+    wrap.querySelector('#tc-clock-out').addEventListener('click', () => confirmClockOut(card));
     return wrap;
 }
 
@@ -1410,8 +1737,8 @@ function logout() {
     api('/auth/logout', { method: 'POST' })
         .catch(() => {})
         .then(() => {
-            localStorage.removeItem('kisnet.token');
-            localStorage.removeItem('kisnet.returnTo');
+            sessionStorage.removeItem('kisnet.token');
+            sessionStorage.removeItem('kisnet.returnTo');
             state.employee = null;
             state.token = null;
             renderMenu();
@@ -1419,13 +1746,29 @@ function logout() {
         });
 }
 
+// Clock out asks first: it ends the shift, and the person must clock in again to start another
+function confirmClockOut(card) {
+    const body = openModal('Confirm clock out', `
+        <p><strong>Name:</strong> ${escapeHtml(card.employee.name)}</p>
+        <p><strong>Time:</strong> ${fmtDate(new Date().toISOString())}</p>
+        <p>This ends your shift. Clock out now?</p>
+        <button id="confirm-clock-out-btn" class="btn-large">Confirm clock out</button>
+        <button id="cancel-clock-out-btn" class="btn-large">Cancel</button>
+    `);
+    body.querySelector('#cancel-clock-out-btn').addEventListener('click', closeModal);
+    body.querySelector('#confirm-clock-out-btn').addEventListener('click', () => {
+        closeModal();
+        clockOut();
+    });
+}
+
 // Clock out function
 function clockOut() {
-    localStorage.removeItem('kisnet.returnTo');
+    sessionStorage.removeItem('kisnet.returnTo');
     api('/auth/clock-out', { method: 'POST' })
         .then(() => {
             // Clear local storage and state
-            localStorage.removeItem('kisnet.token');
+            sessionStorage.removeItem('kisnet.token');
             state.employee = null;
             state.token = null;
             renderMenu();
@@ -1436,7 +1779,7 @@ function clockOut() {
         .catch(error => {
             console.error('Clock out error:', error);
             // Still redirect to login even if clock-out failed
-            localStorage.removeItem('kisnet.token');
+            sessionStorage.removeItem('kisnet.token');
             state.employee = null;
             state.token = null;
             go('#/login');
@@ -1449,15 +1792,24 @@ function renderNavBar() {
     topBar.className = 'top-bar';
     
     if (state.employee) {
+        const canToggle = state.employee.role === 'bartender' || state.employee.role === 'admin';
+        const onSeats = window.location.hash.slice(1) === '/barseats';
         topBar.innerHTML = `
             <div>Welcome, ${state.employee.name} (${state.employee.role})</div>
-            <button id="logout-btn" class="btn-large">Logout</button>
+            <div class="top-actions">
+                ${canToggle ? `<button id="view-toggle" class="btn-large">${onSeats ? 'Drink Queue' : 'Bar Seats'}</button>` : ''}
+                <button id="logout-btn" class="btn-large">Logout</button>
+            </div>
         `;
         
         document.getElementById('app').prepend(topBar);
         
         // Add event listener for clock out button
         document.getElementById('logout-btn').addEventListener('click', logout);
+        const toggle = document.getElementById('view-toggle');
+        if (toggle) {
+            toggle.addEventListener('click', () => go(window.location.hash.slice(1) === '/barseats' ? '/bar' : '/barseats'));
+        }
     } else {
         topBar.innerHTML = '<div>KISnet POS</div>';
         document.getElementById('app').prepend(topBar);
@@ -1472,12 +1824,14 @@ const PUBLIC_PATHS = ['/home', '/login', '/timecard'];
 const MENU_LABELS = {
     '/home': 'Home', '/login': 'Login',
     '/command': 'Command Center', '/reports': 'Reports', '/host': 'Host', '/server': 'Server',
-    '/bar': 'Bar', '/kitchen': 'Kitchen', '/timecard': 'Time Card'
+    '/bar': 'Drink Queue', '/barseats': 'Bar Seats', '/kitchen': 'Kitchen', '/timecard': 'Time Card',
+    '/summary': 'Daily Summary'
 };
 
 // The three-bar menu sits outside the screens, so it is available on every page
 function buildMenuChrome() {
     document.body.insertAdjacentHTML('beforeend', `
+        <div id="drink-alerts" class="drink-alerts"></div>
         <button id="menu-toggle" class="menu-toggle" aria-label="Open menu">&#9776;</button>
         <div id="menu-backdrop" class="menu-backdrop"></div>
         <nav id="side-menu" class="side-menu"></nav>`);
@@ -1502,9 +1856,11 @@ function renderMenu() {
     if (!state.employee) {
         paths = ['/home', '/login', '/timecard'];
     } else if (state.employee.role === 'admin') {
-        paths = ['/command', '/reports', '/host', '/server', '/bar', '/kitchen', '/timecard'];
+        paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard'];
     } else {
-        paths = [stationFor(state.employee.role), '/timecard'];
+        paths = state.employee.role === 'bartender'
+            ? ['/barseats', '/bar', '/timecard']
+            : [stationFor(state.employee.role), '/timecard'];
     }
     menu.innerHTML = '<h3 class="side-menu-title">Menu</h3>';
     paths.forEach(path => {
@@ -1540,7 +1896,7 @@ function updateScreen() {
 
     if (!state.employee) {
         // Try to resume a saved session, otherwise show the login form
-        const token = localStorage.getItem('kisnet.token');
+        const token = sessionStorage.getItem('kisnet.token');
         if (token) {
             api('/auth/me')
                 .then(data => {
@@ -1550,7 +1906,7 @@ function updateScreen() {
                     goTo(current && canVisit(data.role, current) ? current : stationFor(data.role));
                 })
                 .catch(() => {
-                    localStorage.removeItem('kisnet.token');
+                    sessionStorage.removeItem('kisnet.token');
                     renderLogin(mainContent);
                 });
         } else {
@@ -1576,7 +1932,9 @@ function updateScreen() {
 
 // Initialize the app
 function init() {
+    // Session is kept per browser tab (sessionStorage), so each tab can run its own screen
     buildMenuChrome();
+    setInterval(checkDrinkAlerts, 3000);
 
     // Listen for hash changes
     window.addEventListener('hashchange', updateScreen);
@@ -1585,7 +1943,7 @@ function init() {
     ['pointerdown', 'keydown', 'mousemove', 'touchstart', 'input', 'scroll'].forEach(type =>
         document.addEventListener(type, () => { lastActivity = Date.now(); }, { passive: true }));
     setInterval(() => {
-        if (localStorage.getItem('kisnet.token') && Date.now() - lastActivity > IDLE_LIMIT_MS) {
+        if (sessionStorage.getItem('kisnet.token') && Date.now() - lastActivity > IDLE_LIMIT_MS) {
             expireSession();
         }
     }, 15000);
@@ -1609,6 +1967,10 @@ window.KIS = {
 function stopScreenTimers() {
     clearKitchenInterval();
     stopTicketPanel();
+    if (window.KIS && window.KIS.queueInterval) {
+        clearInterval(window.KIS.queueInterval);
+        window.KIS.queueInterval = null;
+    }
     if (window.KIS && window.KIS.commandInterval) {
         clearInterval(window.KIS.commandInterval);
         window.KIS.commandInterval = null;

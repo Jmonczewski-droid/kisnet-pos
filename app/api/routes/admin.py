@@ -1,9 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import date
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
 
 from app.api.deps import get_current_employee, get_db, require_roles
 from app.services.admin import list_employees, on_clock, force_clock_out
+from app.services.stats import day_stats
+from app.services.daily_reports import end_of_day
 from app.models.employee import Employee
 
 
@@ -84,3 +88,22 @@ async def clock_out(
         return {"clocked_out": True}
     except ValueError:
         raise HTTPException(status_code=404, detail="Employee is not on clock")
+
+@router.get("/admin/stats")
+def get_day_stats(
+    day: Optional[date] = Query(None, alias="date", description="Business day (default today)"),
+    _: Employee = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+):
+    """Sales, active tickets, and labor by hour for one business day."""
+    return day_stats(db, day)
+
+
+@router.post("/admin/end-of-day")
+def run_end_of_day(
+    day: Optional[date] = Query(None, alias="date", description="Business day (default today)"),
+    _: Employee = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+):
+    """Export the business day's summary, item sales and hourly figures to CSV files on the server."""
+    return end_of_day(db, day)

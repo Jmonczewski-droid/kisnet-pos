@@ -3,16 +3,35 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_employee, get_db
 from app.services.orders import (
     add_items,
+    send_ticket,
     update_item,
     void_item,
     complete_order,
     order_out,
     OrderError
 )
-from app.schemas.order import OrderOut, OrderItemsIn, OrderItemPatch
+from app.schemas.order import OrderOut, OrderItemsIn, OrderItemPatch, TicketSendIn
 from app.models import Party, OrderItem
 
 router = APIRouter()
+
+
+@router.post("/parties/{party_id}/send", response_model=OrderOut)
+async def send_order_ticket(
+    party_id: int,
+    ticket: TicketSendIn,
+    db: Session = Depends(get_db),
+    current_employee = Depends(get_current_employee)
+):
+    """Send the ticket: new lines, changes and voids are saved and go to the kitchen and bar."""
+    party = db.get(Party, party_id)
+    if not party:
+        raise HTTPException(status_code=404, detail="Party not found")
+    try:
+        order = send_ticket(db, current_employee, party, ticket.items, ticket.updates, ticket.voids)
+        return order_out(order)
+    except OrderError as e:
+        raise HTTPException(status_code=e.status, detail=e.detail)
 
 
 @router.post("/parties/{party_id}/items", response_model=OrderOut, status_code=status.HTTP_201_CREATED)
