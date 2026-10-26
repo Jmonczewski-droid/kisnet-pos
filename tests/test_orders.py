@@ -46,3 +46,25 @@ def test_routes_importable():
     from app.api.routes.orders import router
     
     assert router is not None
+
+def test_change_quantity_and_void_line_through_api(client, db, login):
+    from app.core.time import utcnow
+    from app.models import Party, MenuItem, Employee
+    from app.services.orders import add_items, update_item, void_item
+    from app.schemas.order import OrderItemIn, OrderItemsIn, OrderItemPatch
+
+    server = db.query(Employee).filter_by(code="SRV1").one()
+    party = Party(seat="B9", party_name="Edit Test", party_size=2, server_id=server.id, created_by_id=server.id, opened_at=utcnow())
+    db.add(party)
+    db.commit()
+    menu_item = db.query(MenuItem).filter_by(name="Garden Salad").one()
+    order = add_items(db, server, party, OrderItemsIn(items=[OrderItemIn(menu_item_id=menu_item.id, qty=1, notes=None)]))
+    line = order.items[0]
+
+    update_item(db, server, line, OrderItemPatch(qty=3, notes="no croutons"))
+    db.refresh(line)
+    assert line.qty == 3 and line.changed is True and line.notes == "no croutons"
+
+    void_item(db, server, line)
+    db.refresh(line)
+    assert line.voided is True

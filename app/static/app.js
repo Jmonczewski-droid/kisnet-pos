@@ -25,7 +25,8 @@ function api(path, opts = {}) {
                     throw new Error(err.detail || `HTTP error! status: ${response.status}`);
                 });
             }
-            return response.json();
+            // 204 No Content (e.g. voiding an item) has no body to parse
+            return response.status === 204 ? null : response.json();
         });
 }
 
@@ -239,6 +240,173 @@ function closeItemPopover() {
     popover.remove();
 }
 
+// ---- Server ticket panel: the current ticket, live, with edits on a selected line ----
+
+const TICKET_REFRESH_MS = 3000;
+
+function showTicketPanel(party) {
+    window.KIS.ticket = window.KIS.ticket || { partyId: null, selectedId: null, party: null, interval: null };
+    const ticket = window.KIS.ticket;
+    if (ticket.partyId !== party.id) {
+        ticket.selectedId = null;
+    }
+    ticket.partyId = party.id;
+    ticket.party = party;
+
+    if (!document.getElementById('ticket-panel')) {
+        const panel = document.createElement('aside');
+        panel.id = 'ticket-panel';
+        panel.className = 'ticket-panel';
+        panel.innerHTML = `
+            <h3 id="ticket-title"></h3>
+            <p id="ticket-status" class="status-note"></p>
+            <div id="ticket-list"></div>
+            <div id="ticket-editor" class="ticket-editor"></div>`;
+        document.body.appendChild(panel);
+        document.body.classList.add('ticket-open');
+        document.getElementById('ticket-list').addEventListener('click', (event) => {
+            const row = event.target.closest('.ticket-row');
+            if (!row) return;
+            ticket.selectedId = parseInt(row.dataset.itemId, 10);
+            drawTicketList();
+            drawTicketEditor();
+        });
+    }
+
+    drawTicketList();
+    drawTicketEditor();
+    if (!ticket.interval) {
+        ticket.interval = setInterval(refreshTicketPanel, TICKET_REFRESH_MS);
+    }
+}
+
+function stopTicketPanel() {
+    const ticket = window.KIS && window.KIS.ticket;
+    if (ticket && ticket.interval) {
+        clearInterval(ticket.interval);
+        ticket.interval = null;
+    }
+    const panel = document.getElementById('ticket-panel');
+    if (panel) panel.remove();
+    document.body.classList.remove('ticket-open');
+}
+
+// Reload the party so the panel shows the latest ticket (keeps the selected line and any typing)
+function refreshTicketPanel() {
+    const ticket = window.KIS.ticket;
+    if (!ticket || !ticket.partyId || !document.getElementById('ticket-panel')) return;
+    api(`/api/v1/parties/${ticket.partyId}`)
+        .then(party => {
+            ticket.party = party;
+            drawTicketList();
+            if (ticket.selectedId && !currentTicketItem()) {
+                ticket.selectedId = null;
+                drawTicketEditor();
+            }
+            setTicketStatus('');
+        })
+        .catch(error => setTicketStatus(`Could not refresh (${error.message}). Retrying...`));
+}
+
+function setTicketStatus(text) {
+    const status = document.getElementById('ticket-status');
+    if (status) status.textContent = text;
+}
+
+function ticketItems() {
+    const party = window.KIS.ticket && window.KIS.ticket.party;
+    return party && party.open_order ? party.open_order.items : [];
+}
+
+function currentTicketItem() {
+    return ticketItems().find(item => item.id === window.KIS.ticket.selectedId) || null;
+}
+
+function drawTicketList() {
+    const ticket = window.KIS.ticket;
+    const list = document.getElementById('ticket-list');
+    const title = document.getElementById('ticket-title');
+    if (!list || !ticket || !ticket.party) return;
+
+    title.textContent = `Ticket: ${ticket.party.seat} - ${ticket.party.party_name}`;
+    const items = ticketItems();
+    if (items.length === 0) {
+        list.innerHTML = '<p>No items on this ticket yet.</p>';
+        return;
+    }
+    list.innerHTML = items.map(item => {
+        const badges = [
+            item.voided ? 'VOID' : '',
+            !item.voided && item.bumped ? 'SENT' : '',
+            !item.voided && item.changed ? 'CHANGED' : ''
+        ].filter(Boolean);
+        return `
+            <div class="ticket-row ${item.id === ticket.selectedId ? 'selected' : ''} ${item.voided ? 'voided' : ''}" data-item-id="${item.id}">
+                <strong>${escapeHtml(item.name)}</strong> x${item.qty}
+                <span class="ticket-price">$${(item.line_total_cents / 100).toFixed(2)}</span>
+                ${badges.map(b => `<span class="ticket-badge">${b}</span>`).join('')}
+                ${item.notes ? `<div class="ticket-notes">${escapeHtml(item.notes)}</div>` : ''}
+            </div>`;
+    }).join('') + `<p class="ticket-total">Total: $${(ticketTotalCents() / 100).toFixed(2)}</p>`;
+}
+
+function ticketTotalCents() {
+    return ticketItems().reduce((sum, item) => sum + item.line_total_cents, 0);
+}
+
+// Editor for the selected line. Only rebuilt on selection or after a save, so typing survives refreshes.
+function drawTicketEditor() {
+    const editor = document.getElementById('ticket-editor');
+    if (!editor) return;
+    const item = currentTicketItem();
+    if (!item) {
+        editor.innerHTML = '<p class="ticket-hint">Select an item to change it.</p>';
+        return;
+    }
+    const locked = item.voided || item.bumped;
+    editor.innerHTML = `
+        <h4>${escapeHtml(item.name)}</h4>
+        ${locked ? `<p class="status-note">${item.voided ? 'Voided' : 'Already sent to the kitchen or bar; it cannot be changed.'}</p>` : ''}
+        <div class="qty-row">
+            <button id="tk-dec" ${locked ? 'disabled' : ''}>-</button>
+            <input id="tk-qty" type="number" min="1" value="${item.qty}" ${locked ? 'disabled' : ''}>
+            <button id="tk-inc" ${locked ? 'disabled' : ''}>+</button>
+        </div>
+        <input id="tk-notes" type="text" placeholder="Notes" value="${escapeHtml(item.notes || '')}" ${locked ? 'disabled' : ''}>
+        <div class="ticket-editor-actions">
+            <button id="tk-save" class="btn-large" ${locked ? 'disabled' : ''}>Save</button>
+            <button id="tk-void" class="btn-large" ${locked ? 'disabled' : ''}>Void item</button>
+        </div>`;
+    if (locked) return;
+
+    const qtyInput = document.getElementById('tk-qty');
+    document.getElementById('tk-dec').addEventListener('click', () => {
+        qtyInput.value = Math.max(1, (parseInt(qtyInput.value, 10) || 1) - 1);
+    });
+    document.getElementById('tk-inc').addEventListener('click', () => {
+        qtyInput.value = (parseInt(qtyInput.value, 10) || 0) + 1;
+    });
+    document.getElementById('tk-save').addEventListener('click', () => {
+        const qty = parseInt(qtyInput.value, 10);
+        if (!(qty >= 1)) {
+            alert('Quantity must be at least 1');
+            return;
+        }
+        api(`/api/v1/order-items/${item.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ qty, notes: document.getElementById('tk-notes').value.trim() })
+        })
+        .then(() => refreshTicketPanel())
+        .catch(error => alert('Could not save change: ' + error.message));
+    });
+    document.getElementById('tk-void').addEventListener('click', () => {
+        if (!confirm(`Void ${item.name}?`)) return;
+        api(`/api/v1/order-items/${item.id}`, { method: 'DELETE' })
+            .then(() => refreshTicketPanel())
+            .catch(error => alert('Could not void item: ' + error.message));
+    });
+}
+
 function renderPartyDetails(root, party, role) {
     const isHostScreen = role === 'host';
     const isServerScreen = role === 'server';
@@ -270,7 +438,7 @@ function renderPartyDetails(root, party, role) {
                     ${isHostScreen && !party.closed_at ? 
                         `<button class="btn-large" id="close-table-btn">Close Table</button>` : ''}
                         
-                    ${party.open_order ? `
+                    ${party.open_order && !isServerScreen ? `
                         <h3>Current Order</h3>
                         <div id="order-items">
                             ${party.open_order.items.map(item => {
@@ -319,6 +487,9 @@ function renderPartyDetails(root, party, role) {
             `;
             
             root.innerHTML = partyDetails;
+            if (isServerScreen) {
+                showTicketPanel(party);
+            }
             
             // Add event listeners for host screen buttons
             if (isHostScreen && !party.closed_at) {
@@ -448,59 +619,51 @@ function completeClockIn(code, pin) {
 }
 
 function renderCommand(root) {
-    root.innerHTML = '<div class="card"><h2>Command Center (Loading...)</h2></div>';
-    
-    // Fetch employees on clock
+    // A refresh keeps the current table on screen; only the first load shows "Loading"
+    const refreshing = !!root.querySelector('#command-card');
+    if (!refreshing) {
+        root.innerHTML = '<div class="card" id="command-card"><h2>Command Center (Loading...)</h2></div>';
+    }
+
     api('/api/v1/admin/on-clock')
         .then(employees => {
-            if (employees.length === 0) {
-                root.innerHTML = '<div class="card"><h2>Command Center</h2><p>No employees currently on clock.</p></div>';
-                return;
-            }
-            
-            const tableHTML = `
-                <div class="card">
+            const rows = employees.map(emp => `
+                <tr>
+                    <td>${escapeHtml(emp.code)}</td>
+                    <td>${escapeHtml(emp.name)}</td>
+                    <td>${escapeHtml(emp.role)}</td>
+                    <td>${fmtDate(emp.clocked_in_at)}</td>
+                    <td>${fmtElapsed(emp.clocked_in_at)}</td>
+                    <td><button class="btn-large clock-out-btn" data-employee-id="${emp.id}">Clock Out</button></td>
+                </tr>`).join('');
+
+            root.innerHTML = `
+                <div class="card" id="command-card">
                     <h2>Command Center</h2>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Code</th>
-                                <th>Name</th>
-                                <th>Role</th>
-                                <th>Clocked In</th>
-                                <th>Elapsed Time</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${employees.map(emp => `
+                    <p id="command-status" class="status-note"></p>
+                    ${employees.length === 0
+                        ? '<p>No employees currently on clock.</p>'
+                        : `<table>
+                            <thead>
                                 <tr>
-                                    <td>${emp.code}</td>
-                                    <td>${emp.name}</td>
-                                    <td>${emp.role}</td>
-                                    <td>${fmtDate(emp.clocked_in_at)}</td>
-                                    <td>${fmtElapsed(emp.clocked_in_at)}</td>
-                                    <td><button class="btn-large clock-out-btn" data-employee-id="${emp.id}">Clock Out</button></td>
+                                    <th>Code</th>
+                                    <th>Name</th>
+                                    <th>Role</th>
+                                    <th>Clocked In</th>
+                                    <th>Elapsed Time</th>
+                                    <th>Action</th>
                                 </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
-            
-            root.innerHTML = tableHTML;
-            
-            // Add event listeners for clock out buttons
-            document.querySelectorAll('.clock-out-btn').forEach(button => {
+                            </thead>
+                            <tbody>${rows}</tbody>
+                        </table>`}
+                </div>`;
+
+            root.querySelectorAll('.clock-out-btn').forEach(button => {
                 button.addEventListener('click', function() {
                     const employeeId = this.dataset.employeeId;
-                    
                     if (confirm('Are you sure you want to clock out this employee?')) {
                         api(`/api/v1/admin/clock-out/${employeeId}`, { method: 'POST' })
-                            .then(() => {
-                                // Refresh the command screen after successful clock out
-                                renderCommand(root);
-                            })
+                            .then(() => renderCommand(root))
                             .catch(error => {
                                 alert('Error clocking out employee: ' + error.message);
                                 console.error('Error clocking out:', error);
@@ -510,11 +673,20 @@ function renderCommand(root) {
             });
         })
         .catch(error => {
-            root.innerHTML = `<div class="card"><h2>Error</h2><p>${error.message}</p></div>`;
             console.error('Error loading employees on clock:', error);
+            const status = root.querySelector('#command-status');
+            if (status) {
+                // Keep the last list on screen; the next refresh will try again
+                status.textContent = `Could not refresh (${error.message}). Retrying...`;
+            } else {
+                root.innerHTML = `<div class="card" id="command-card"><h2>Command Center</h2><p class="status-note">Could not load the list (${escapeHtml(error.message)}). Retrying...</p></div>`;
+            }
         });
-    
-    // Refresh every 10 seconds
+
+    // Refresh every 10 seconds. Replace any existing timer: renderCommand runs again on every refresh.
+    if (window.KIS.commandInterval) {
+        clearInterval(window.KIS.commandInterval);
+    }
     window.KIS.commandInterval = setInterval(() => {
         if (window.location.hash.slice(1) === '/command') {
             renderCommand(root);
@@ -822,10 +994,28 @@ function showAssignTable(root, seat, servers) {
 function showOccupiedTable(root, partyId) {
     api(`/api/v1/parties/${partyId}`)
         .then(party => {
+            const order = party.open_order;
+            const itemCount = order ? order.items.filter(item => !item.voided).reduce((sum, item) => sum + item.qty, 0) : 0;
+            const status = order ? `Order open, ${itemCount} item${itemCount === 1 ? '' : 's'}` : 'Seated, no order yet';
+            const lines = order
+                ? order.items.filter(item => !item.voided).map(item => `
+                    <tr>
+                        <td>${escapeHtml(item.name)}</td>
+                        <td>${item.qty}</td>
+                        <td>$${(item.line_total_cents / 100).toFixed(2)}</td>
+                    </tr>`).join('')
+                : '';
             const body = openModal(`Table ${party.seat}`, `
                 <p><strong>${escapeHtml(party.party_name)}</strong>, party of ${party.party_size}</p>
                 <p>Server: ${escapeHtml(party.server_name || 'none')}</p>
                 <p>Seated: ${fmtDate(party.opened_at)} (${fmtElapsed(party.opened_at)} ago)</p>
+                <p><strong>Status:</strong> ${status}</p>
+                ${order ? `
+                    <table class="data-table">
+                        <thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead>
+                        <tbody>${lines || '<tr><td colspan="3">No items</td></tr>'}</tbody>
+                        <tfoot><tr><th colspan="2">Current check</th><th>$${(order.total_cents / 100).toFixed(2)}</th></tr></tfoot>
+                    </table>` : '<p><strong>Current check:</strong> $0.00</p>'}
                 <button id="close-table-btn" class="btn-large">Close table</button>
                 <button id="done-table-btn" class="btn-large">Done</button>
             `);
@@ -1418,6 +1608,7 @@ window.KIS = {
 // Stop every screen's refresh timer (kitchen tickets, command center)
 function stopScreenTimers() {
     clearKitchenInterval();
+    stopTicketPanel();
     if (window.KIS && window.KIS.commandInterval) {
         clearInterval(window.KIS.commandInterval);
         window.KIS.commandInterval = null;

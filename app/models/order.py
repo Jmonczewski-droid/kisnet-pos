@@ -15,7 +15,7 @@ class Order(Base):
     completed_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)
 
     # Relationship
-    items: Mapped[List["OrderItem"]] = relationship("OrderItem", order_by="OrderItem.id", cascade="all")
+    items: Mapped[List["OrderItem"]] = relationship("OrderItem", order_by="OrderItem.id", cascade="all", back_populates="order")
     party: Mapped["Party"] = relationship("Party", back_populates="orders")
 
 
@@ -37,6 +37,7 @@ class OrderItem(Base):
     bumped_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)
 
     # Relationship
+    order: Mapped["Order"] = relationship("Order", back_populates="items")
     ingredients: Mapped[List["OrderItemIngredient"]] = relationship("OrderItemIngredient", cascade="all")
 
 
