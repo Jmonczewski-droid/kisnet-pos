@@ -201,7 +201,7 @@ function showAddItemPopover(button, item, party, root, role = 'server') {
 }
 
 // Small pop-up beside an occupied bar seat
-function showSeatPopover(button, seat, root) {
+function showSeatPopover(button, seat, root, role = 'bartender') {
     closeItemPopover();
     const popover = document.createElement('div');
     popover.id = 'item-popover';
@@ -210,6 +210,7 @@ function showSeatPopover(button, seat, root) {
         <p><strong>${escapeHtml(seat.seat)}</strong>: ${escapeHtml(seat.party.party_name)}</p>
         <div class="item-popover-actions">
             <button id="seat-place-order" class="btn-large">Place order</button>
+            <button id="seat-payment" class="btn-large">Payment</button>
             <button id="seat-cancel" class="btn-large">Cancel</button>
         </div>`;
     document.body.appendChild(popover);
@@ -219,8 +220,17 @@ function showSeatPopover(button, seat, root) {
     popover.querySelector('#seat-place-order').addEventListener('click', () => {
         closeItemPopover();
         api(`/api/v1/parties/${seat.party.id}`)
-            .then(party => renderPartyDetails(root, party, 'bartender'))
+            .then(party => renderPartyDetails(root, party, role))
             .catch(error => alert('Could not open the order: ' + error.message));
+    });
+    popover.querySelector('#seat-payment').addEventListener('click', () => {
+        closeItemPopover();
+        api(`/api/v1/parties/${seat.party.id}`)
+            .then(party => {
+                renderPartyDetails(root, party, role);
+                confirmPayment(party, role);
+            })
+            .catch(error => alert('Could not open the ticket: ' + error.message));
     });
     watchOutsideClicks(popover, button);
 }
@@ -506,22 +516,34 @@ function toggleSelectedLine(line) {
     drawTicketEditor();
 }
 
-// Send to Payment: closes the table (payment is assumed accepted). The table's order is completed.
+// Payment: asks for confirmation, then closes the table (payment is assumed accepted)
+function confirmPayment(party, role) {
+    const draft = draftFor(party.id);
+    const warning = hasStagedChanges(draft) ? '<p class="status-note">Changes that have not been sent will be lost.</p>' : '';
+    const body = openModal('Send to payment', `
+        <p><strong>${escapeHtml(party.seat)}</strong> - ${escapeHtml(party.party_name)}</p>
+        <p>Send this table to payment? The table will close.</p>
+        ${warning}
+        <button id="payment-confirm-btn" class="btn-large">Confirm payment</button>
+        <button id="payment-cancel-btn" class="btn-large">Cancel</button>`);
+    body.querySelector('#payment-cancel-btn').addEventListener('click', closeModal);
+    body.querySelector('#payment-confirm-btn').addEventListener('click', () => {
+        closeModal();
+        api(`/api/v1/parties/${party.id}/close`, { method: 'POST' })
+            .then(() => {
+                window.KIS.drafts[party.id] = null;
+                stopTicketPanel();
+                window.KIS.ticket.partyId = null;
+                goTo(role === 'bartender' ? '/barseats' : '/server');
+            })
+            .catch(error => alert('Could not send to payment: ' + error.message));
+    });
+}
+
+// Send to Payment in the order sidebar
 function sendToPayment() {
-    const ticket = window.KIS.ticket;
-    const draft = draftFor(ticket.partyId);
-    if (hasStagedChanges(draft) && !confirm('Changes that have not been sent will be lost. Send to payment anyway?')) {
-        return;
-    }
-    const isBar = state.employee.role === 'bartender';
-    api(`/api/v1/parties/${ticket.partyId}/close`, { method: 'POST' })
-        .then(() => {
-            window.KIS.drafts[ticket.partyId] = null;
-            stopTicketPanel();
-            ticket.partyId = null;
-            goTo(isBar ? '/barseats' : '/server');
-        })
-        .catch(error => alert('Could not send to payment: ' + error.message));
+    const party = window.KIS.ticket.party;
+    confirmPayment(party, state.employee.role);
 }
 
 // Send: everything staged goes to the server in one request, then to the kitchen and bar
@@ -566,7 +588,7 @@ function renderPartyDetails(root, party, role) {
             
             const partyDetails = `
                 <div class="card" id="party-details-card">
-                    ${isBarScreen ? '<button id="back-to-bar" class="btn-large">Back to bar seats</button>' : ''}
+                    ${isServerScreen ? `<button id="back-to-tables" class="btn-large">${isBarScreen ? 'Back to bar seats' : 'Back to my tables'}</button>` : ''}
                     <h2>Party Details</h2>
                     <p><strong>Seat:</strong> ${party.seat}</p>
                     <p><strong>Party Name:</strong> ${party.party_name}</p>
@@ -629,8 +651,8 @@ function renderPartyDetails(root, party, role) {
             
             // Add event listeners for host screen buttons
             
-            if (isBarScreen) {
-                document.getElementById('back-to-bar').addEventListener('click', () => renderBar(root));
+            if (isServerScreen) {
+                document.getElementById('back-to-tables').addEventListener('click', () => (isBarScreen ? renderBar(root) : renderServer(root)));
             }
 
             // Clicking a menu item asks, in a small pop-up beside it, whether to add it
@@ -709,9 +731,18 @@ function roleLabel(role) {
 // Pop-up asking the person to confirm their clock in
 function confirmClockIn(preview, credentials) {
     const employee = preview.employee;
+    const positions = preview.positions || [employee.role];
+    const picker = positions.length > 1
+        ? `<div class="form-group">
+               <label for="clock-position">Clocking in as</label>
+               <select id="clock-position">
+                   ${positions.map(role => `<option value="${role}">${escapeHtml(roleLabel(role))}</option>`).join('')}
+               </select>
+           </div>`
+        : `<p><strong>Position:</strong> ${escapeHtml(roleLabel(positions[0]))}</p>`;
     const body = openModal('Confirm clock in', `
         <p><strong>Name:</strong> ${escapeHtml(employee.name)}</p>
-        <p><strong>Position:</strong> ${escapeHtml(roleLabel(employee.role))}</p>
+        ${picker}
         <p><strong>Time:</strong> ${fmtDate(preview.now)}</p>
         <p>Clock in now?</p>
         <button id="confirm-clock-in-btn" class="btn-large">Confirm clock in</button>
@@ -721,7 +752,9 @@ function confirmClockIn(preview, credentials) {
     body.querySelector('#cancel-clock-in-btn').addEventListener('click', closeModal);
     body.querySelector('#confirm-clock-in-btn').addEventListener('click', () => {
         closeModal();
-        api('/auth/clock-in', { method: 'POST', body: JSON.stringify(credentials) })
+        const chosen = body.querySelector('#clock-position');
+        const position = chosen ? chosen.value : positions[0];
+        api('/auth/clock-in', { method: 'POST', body: JSON.stringify({ ...credentials, position }) })
             .then(result => {
                 setLoginMessage(`${result.employee.name} clocked in at ${fmtDate(result.clocked_in_at)}. Log in to open your station.`);
                 document.getElementById('pin').value = '';
@@ -766,15 +799,13 @@ function renderCommand(root) {
                     <td>${escapeHtml(emp.role)}</td>
                     <td>${fmtDate(emp.clocked_in_at)}</td>
                     <td>${fmtElapsed(emp.clocked_in_at)}</td>
-                    <td>${emp.logged_in
-                        ? '<button class="btn-large clock-out-btn" data-employee-id="' + emp.id + '">Clock Out</button>'
-                        : '<em>Logged out</em>'}</td>
                 </tr>`).join('');
 
             root.innerHTML = `
                 <div class="card" id="command-card">
                     <h2>Command Center</h2>
                     <p id="command-status" class="status-note"></p>
+                    <div id="stats-block"></div>
                     ${employees.length === 0
                         ? '<p>No employees currently on clock.</p>'
                         : `<table>
@@ -785,28 +816,13 @@ function renderCommand(root) {
                                     <th>Role</th>
                                     <th>Clocked In</th>
                                     <th>Elapsed Time</th>
-                                    <th>Action</th>
                                 </tr>
                             </thead>
                             <tbody>${rows}</tbody>
                         </table>`}
-                    <div id="stats-block"></div>
                 </div>`;
 
             loadDayStats();
-            root.querySelectorAll('.clock-out-btn').forEach(button => {
-                button.addEventListener('click', function() {
-                    const employeeId = this.dataset.employeeId;
-                    if (confirm('Are you sure you want to clock out this employee?')) {
-                        api(`/api/v1/admin/clock-out/${employeeId}`, { method: 'POST' })
-                            .then(() => renderCommand(root))
-                            .catch(error => {
-                                alert('Error clocking out employee: ' + error.message);
-                                console.error('Error clocking out:', error);
-                            });
-                    }
-                });
-            });
         })
         .catch(error => {
             console.error('Error loading employees on clock:', error);
@@ -828,6 +844,185 @@ function renderCommand(root) {
             renderCommand(root);
         }
     }, 10000);
+}
+
+// System > Employees (admin): roster with oversight information, and adding an employee
+const POSITION_OPTIONS = ['admin', 'host', 'server', 'bartender', 'kitchen'];
+
+function renderEmployees(root) {
+    root.innerHTML = `
+        <div class="card">
+            <h2>Employees</h2>
+            <div class="week-nav">
+                <button id="emp-add-toggle" class="btn-large">Add employee</button>
+            </div>
+            <div id="emp-add-form"></div>
+            <p id="emp-status" class="status-note"></p>
+            <div id="emp-roster"></div>
+        </div>`;
+    document.getElementById('emp-add-toggle').addEventListener('click', showAddEmployeeForm);
+    loadRoster();
+}
+
+function loadRoster() {
+    const box = document.getElementById('emp-roster');
+    if (!box) return;
+    api('/api/v1/admin/roster')
+        .then(rows => {
+            const money = hours => `${hours.toFixed(2)} h`;
+            box.innerHTML = `
+                <table class="data-table">
+                    <thead><tr><th>Code</th><th>Name</th><th>Positions</th><th>Hire date</th><th>SSN</th>
+                        <th>On clock</th><th>Hours this week</th><th>Address</th><th>DOB</th></tr></thead>
+                    <tbody>${rows.map(row => `
+                        <tr>
+                            <td>${escapeHtml(row.code)}</td>
+                            <td>${escapeHtml(row.name)}</td>
+                            <td>${row.positions.map(roleLabel).join(', ')}</td>
+                            <td>${row.hire_date || ''}</td>
+                            <td>${escapeHtml(row.ssn)}</td>
+                            <td>${row.on_clock ? 'Yes' : ''}</td>
+                            <td>${money(row.week_hours)}</td>
+                            <td>${escapeHtml(row.address || '')}</td>
+                            <td>${row.dob || ''}</td>
+                        </tr>`).join('')}</tbody>
+                </table>`;
+        })
+        .catch(error => {
+            box.innerHTML = `<p class="status-note">Could not load the roster (${escapeHtml(error.message)}).</p>`;
+        });
+}
+
+function showAddEmployeeForm() {
+    const form = document.getElementById('emp-add-form');
+    form.innerHTML = `
+        <div class="form-group"><label for="emp-name">Name</label><input type="text" id="emp-name"></div>
+        <div class="form-group"><label for="emp-address">Address</label><input type="text" id="emp-address"></div>
+        <div class="form-group"><label for="emp-dob">Date of birth</label><input type="date" id="emp-dob"></div>
+        <div class="form-group"><label for="emp-hire">Hire date</label><input type="date" id="emp-hire" value="${isoDay(new Date())}"></div>
+        <fieldset class="form-group">
+            <legend>Positions (tick every job this person can do)</legend>
+            ${POSITION_OPTIONS.map(role => `
+                <label class="checkbox-row"><input type="checkbox" class="emp-position" value="${role}"> ${roleLabel(role)}</label>`).join('')}
+        </fieldset>
+        <div class="form-group"><label for="emp-pin">PIN (4 digits or more)</label><input type="password" id="emp-pin" value="1234"></div>
+        <button id="emp-save" class="btn-large">Save employee</button>
+        <button id="emp-cancel" class="btn-large">Cancel</button>`;
+    document.getElementById('emp-cancel').addEventListener('click', () => { form.innerHTML = ''; });
+    document.getElementById('emp-save').addEventListener('click', saveEmployee);
+}
+
+function saveEmployee() {
+    const positions = [...document.querySelectorAll('.emp-position:checked')].map(box => box.value);
+    const name = document.getElementById('emp-name').value.trim();
+    if (!name) { alert('Enter the name'); return; }
+    if (positions.length === 0) { alert('Tick at least one position'); return; }
+    const body = {
+        name,
+        address: document.getElementById('emp-address').value.trim() || null,
+        dob: document.getElementById('emp-dob').value || null,
+        hire_date: document.getElementById('emp-hire').value || null,
+        positions,
+        pin: document.getElementById('emp-pin').value
+    };
+    api('/api/v1/admin/employees', { method: 'POST', body: JSON.stringify(body) })
+        .then(created => {
+            document.getElementById('emp-add-form').innerHTML = '';
+            document.getElementById('emp-status').textContent = `Added ${created.code} ${created.name}.`;
+            loadRoster();
+        })
+        .catch(error => alert('Could not add the employee: ' + error.message));
+}
+
+// System > Recipes (admin): add a recipe with its price; its category decides where it is made
+function renderRecipes(root) {
+    root.innerHTML = `
+        <div class="card">
+            <h2>Recipes</h2>
+            <h3>Add a recipe</h3>
+            <div class="form-group"><label for="rec-name">Name</label><input type="text" id="rec-name"></div>
+            <div class="form-group">
+                <label for="rec-category">Category</label>
+                <select id="rec-category">
+                    <option value="bar">Bar (drinks)</option>
+                    <option value="appetizers">Apps</option>
+                    <option value="hot">Hot</option>
+                    <option value="cold">Cold</option>
+                </select>
+            </div>
+            <div class="form-group"><label for="rec-price">Price ($)</label><input type="number" id="rec-price" min="0" step="0.01"></div>
+            <h4>Ingredients</h4>
+            <div id="rec-ingredients"></div>
+            <button id="rec-add-ingredient" class="btn-large">Add ingredient</button>
+            <button id="rec-save" class="btn-large">Save recipe</button>
+            <p id="rec-status" class="status-note"></p>
+            <h3>Recipes on the menu</h3>
+            <div id="rec-list"></div>
+        </div>`;
+    addIngredientRow();
+    document.getElementById('rec-add-ingredient').addEventListener('click', addIngredientRow);
+    document.getElementById('rec-save').addEventListener('click', saveRecipe);
+    loadRecipeList();
+}
+
+function addIngredientRow() {
+    const box = document.getElementById('rec-ingredients');
+    const row = document.createElement('div');
+    row.className = 'ingredient-row';
+    row.innerHTML = `
+        <input type="text" class="ing-name" placeholder="Ingredient">
+        <input type="number" class="ing-qty" min="0" step="0.1" placeholder="Qty">
+        <input type="text" class="ing-unit" placeholder="Unit (oz, each)">`;
+    box.appendChild(row);
+}
+
+function saveRecipe() {
+    const name = document.getElementById('rec-name').value.trim();
+    const price = parseFloat(document.getElementById('rec-price').value);
+    const ingredients = [...document.querySelectorAll('.ingredient-row')].map(row => ({
+        ingredient: row.querySelector('.ing-name').value.trim(),
+        qty: parseFloat(row.querySelector('.ing-qty').value),
+        unit: row.querySelector('.ing-unit').value.trim()
+    })).filter(line => line.ingredient);
+    const status = document.getElementById('rec-status');
+    if (!name || !(price >= 0)) { status.textContent = 'Enter a name and a price.'; return; }
+    if (ingredients.some(line => !(line.qty > 0) || !line.unit)) { status.textContent = 'Each ingredient needs a quantity and a unit.'; return; }
+    api('/api/v1/admin/recipes', {
+        method: 'POST',
+        body: JSON.stringify({ name, category: document.getElementById('rec-category').value,
+                               price_cents: Math.round(price * 100), ingredients })
+    })
+        .then(created => {
+            status.textContent = `Added ${created.name} at $${(created.price_cents / 100).toFixed(2)}.`;
+            document.getElementById('rec-name').value = '';
+            document.getElementById('rec-price').value = '';
+            document.getElementById('rec-ingredients').innerHTML = '';
+            addIngredientRow();
+            loadRecipeList();
+        })
+        .catch(error => { status.textContent = `Could not save: ${error.message}`; });
+}
+
+function loadRecipeList() {
+    const box = document.getElementById('rec-list');
+    if (!box) return;
+    api('/api/v1/admin/recipes')
+        .then(recipes => {
+            box.innerHTML = `
+                <table class="data-table">
+                    <thead><tr><th>Name</th><th>Category</th><th>Price</th><th>Ingredients</th></tr></thead>
+                    <tbody>${recipes.map(recipe => `
+                        <tr>
+                            <td>${escapeHtml(recipe.name)}</td>
+                            <td>${escapeHtml(roleLabel(recipe.category))}</td>
+                            <td>$${(recipe.price_cents / 100).toFixed(2)}</td>
+                            <td>${recipe.ingredients.map(line => `${line.qty} ${escapeHtml(line.unit)} ${escapeHtml(line.ingredient)}`).join(', ')}</td>
+                        </tr>`).join('')}</tbody>
+                </table>`;
+        })
+        .catch(error => {
+            box.innerHTML = `<p class="status-note">Could not load recipes (${escapeHtml(error.message)}).</p>`;
+        });
 }
 
 // Daily Summary (admin): totals for one business day, items by popularity, and the End of Day export
@@ -1269,34 +1464,23 @@ function renderServer(root) {
         .then(openParties => {
             root.innerHTML = `
                 <div class="card">
-                    <h2>Server Station</h2>
-                    <div class="form-group">
-                        <label for="party-select">Select Party:</label>
-                        <select id="party-select" class="form-group">
-                            <option value="">-- Select a party --</option>
-                            ${openParties.map(party => `
-                                <option value="${party.id}">${party.seat} - ${party.party_name}</option>
-                            `).join('')}
-                        </select>
+                    <h2>My Tables</h2>
+                    <div class="grid-buttons" id="server-tables-grid">
+                        ${openParties.map(party => `
+                            <button class="button-card" data-party-id="${party.id}" data-seat="${party.seat}"
+                                    data-name="${escapeHtml(party.party_name)}">
+                                ${party.seat}<br>${escapeHtml(party.party_name)}<br>${fmtElapsed(party.opened_at)}
+                            </button>`).join('')}
                     </div>
-                    <div id="party-details"></div>
-                </div>
-            `;
-            
-            // Add event listener to select
-            document.getElementById('party-select').addEventListener('change', function() {
-                const partyId = this.value;
-                if (partyId) {
-                    api(`/api/v1/parties/${partyId}`)
-                        .then(party => {
-                            renderPartyDetails(root, party, 'server');
-                        })
-                        .catch(error => {
-                            alert('Error loading party details: ' + error.message);
-                        });
-                } else {
-                    document.getElementById('party-details').innerHTML = '';
-                }
+                    ${openParties.length === 0 ? '<p>No tables assigned to you right now.</p>' : ''}
+                </div>`;
+
+            // Tap a table: a small pop-up beside it to place an order, the same as the bar
+            document.querySelectorAll('#server-tables-grid button').forEach(button => {
+                button.addEventListener('click', function() {
+                    const seat = { seat: this.dataset.seat, party: { id: parseInt(this.dataset.partyId, 10), party_name: this.dataset.name } };
+                    showSeatPopover(this, seat, root, 'server');
+                });
             });
         })
         .catch(error => {
@@ -1616,6 +1800,8 @@ const SCREENS = {
     '/kitchen': renderKitchen,
     '/timecard': renderTimeCard,
     '/summary': renderSummary,
+    '/employees': renderEmployees,
+    '/recipes': renderRecipes,
     '/home': renderHome
 };
 
@@ -1825,7 +2011,7 @@ const MENU_LABELS = {
     '/home': 'Home', '/login': 'Login',
     '/command': 'Command Center', '/reports': 'Reports', '/host': 'Host', '/server': 'Server',
     '/bar': 'Drink Queue', '/barseats': 'Bar Seats', '/kitchen': 'Kitchen', '/timecard': 'Time Card',
-    '/summary': 'Daily Summary'
+    '/summary': 'Daily Summary', '/employees': 'Employees', '/recipes': 'Recipes'
 };
 
 // The three-bar menu sits outside the screens, so it is available on every page
@@ -1856,14 +2042,19 @@ function renderMenu() {
     if (!state.employee) {
         paths = ['/home', '/login', '/timecard'];
     } else if (state.employee.role === 'admin') {
-        paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard'];
+        paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard',
+                 '/employees', '/recipes'];
     } else {
         paths = state.employee.role === 'bartender'
             ? ['/barseats', '/bar', '/timecard']
             : [stationFor(state.employee.role), '/timecard'];
     }
     menu.innerHTML = '<h3 class="side-menu-title">Menu</h3>';
-    paths.forEach(path => {
+    paths.forEach((path, index) => {
+        // Admin's System section (Employees and Recipes) sits under its own heading
+        if (path === '/employees') {
+            menu.insertAdjacentHTML('beforeend', '<h3 class="side-menu-title side-menu-section">System</h3>');
+        }
         const link = document.createElement('a');
         link.href = `#${path}`;
         link.className = 'nav-item';

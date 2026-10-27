@@ -5,7 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_employee, get_db, require_roles
-from app.services.admin import list_employees, on_clock, force_clock_out
+from app.services.admin import (AdminError, add_employee, add_recipe, force_clock_out, list_employees,
+                                on_clock, list_recipes, roster)
+from app.schemas.admin import EmployeeIn, RecipeIn
 from app.services.stats import day_stats
 from app.services.daily_reports import end_of_day
 from app.models.employee import Employee
@@ -107,3 +109,31 @@ def run_end_of_day(
 ):
     """Export the business day's summary, item sales and hourly figures to CSV files on the server."""
     return end_of_day(db, day)
+
+
+@router.get("/admin/roster")
+def get_roster(_: Employee = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    """Every employee with positions, on-clock status and hours this week."""
+    return roster(db)
+
+
+@router.post("/admin/employees", status_code=201)
+def create_employee(data: EmployeeIn, _: Employee = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    """Add an employee. The code is assigned from the main position."""
+    employee = add_employee(db, data)
+    return {"id": employee.id, "code": employee.code, "name": employee.name, "positions": employee.positions}
+
+
+@router.get("/admin/recipes")
+def get_recipes(_: Employee = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    return list_recipes(db)
+
+
+@router.post("/admin/recipes", status_code=201)
+def create_recipe(data: RecipeIn, _: Employee = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+    """Add a recipe with its price. Drinks go to the bar; food to the kitchen track of its category."""
+    try:
+        item = add_recipe(db, data)
+    except AdminError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {"id": item.id, "name": item.name, "category": item.category, "price_cents": item.price_cents}

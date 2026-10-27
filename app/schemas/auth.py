@@ -6,6 +6,7 @@ from datetime import datetime
 class ClockInIn(BaseModel):
     code: str
     pin: str
+    position: Optional[str] = None  # the role this shift is worked in, when the employee has several
 
 
 class EmployeeOut(BaseModel):

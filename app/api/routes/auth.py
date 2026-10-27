@@ -13,13 +13,14 @@ router = APIRouter()
 
 @router.post("/clock-in")
 def clock_in_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
-    """Clock in without logging in. Returns the employee and the clock-in time."""
+    """Clock in without logging in. Returns the employee, the position and the clock-in time."""
     try:
-        employee = clock_in(db, clock_in_data.code, clock_in_data.pin)
+        entry = clock_in(db, clock_in_data.code, clock_in_data.pin, clock_in_data.position)
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-    entry = open_entry_for(db, employee.id)
-    return {"employee": EmployeeOut.model_validate(employee), "clocked_in_at": entry.clocked_in_at}
+    employee = db.get(Employee, entry.employee_id)
+    return {"employee": EmployeeOut.model_validate(employee), "position": entry.position,
+            "clocked_in_at": entry.clocked_in_at}
 
 
 @router.post("/login", response_model=TokenOut)
@@ -41,6 +42,7 @@ def preview_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return {
         "employee": EmployeeOut.model_validate(info["employee"]),
+        "positions": info["positions"],
         "on_clock": info["on_clock"],
         "clocked_in_at": info["clocked_in_at"],
         "now": utcnow(),

@@ -444,3 +444,104 @@ th {
 
 /* The SENT box in the order sidebar is red */
 .ticket-badge.sent-badge { background-color: #c0392b; color: #fff; }
+
+/* System screens */
+.side-menu-section { margin-top: 14px; }
+.checkbox-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.ingredient-row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+@media (max-width: 768px) { .ingredient-row { grid-template-columns: 1fr; } }
+
+/* ---- Theme: aged Roman parchment. No bright white anywhere. ---- */
+:root {
+    --parchment: #e8d9b5;
+    --parchment-light: #efe3c4;
+    --parchment-dark: #d4bf92;
+    --ink: #3b2a1a;
+    --leather: #6b4a2b;
+    --leather-dark: #4a2c12;
+    --wax: #7a4a24;
+    --gold: #a88a5a;
+}
+
+body {
+    font-family: Georgia, 'Times New Roman', 'Palatino Linotype', serif;
+    color: var(--ink);
+    background-color: var(--parchment);
+    background-image: radial-gradient(ellipse at top left, #f1e6c9 0%, transparent 60%),
+                      radial-gradient(ellipse at bottom right, #d8c49b 0%, transparent 55%);
+    background-attachment: fixed;
+}
+
+h1, h2, h3, h4 { font-family: Georgia, 'Times New Roman', serif; color: var(--leather-dark); letter-spacing: 0.02em; }
+h2 { border-bottom-color: var(--gold); }
+
+.card {
+    background-color: var(--parchment-light);
+    border: 1px solid var(--gold);
+    box-shadow: inset 0 0 18px rgba(107, 74, 43, 0.18), 0 2px 8px rgba(59, 42, 26, 0.18);
+    color: var(--ink);
+}
+
+.top-bar { background-color: var(--leather); color: #f6ecd3; box-shadow: 0 3px 8px rgba(59, 42, 26, 0.3); }
+.top-bar .top-actions .btn-large { background-color: var(--wax); border: 1px solid var(--leather-dark); }
+
+.btn-large, .button-card, .menu-item-btn, .host-grid button {
+    background-color: var(--wax);
+    color: #f6ecd3;
+    border: 1px solid var(--leather-dark);
+    font-family: Georgia, 'Times New Roman', serif;
+    box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.2), 0 2px 4px rgba(59, 42, 26, 0.25);
+}
+.btn-large:hover, .button-card:hover, .menu-item-btn:hover { background-color: var(--leather); }
+.btn-large:disabled, .button-card:disabled { background-color: #a8977a; color: #efe3c4; }
+
+.menu-toggle { background: var(--leather-dark); color: #f6ecd3; }
+.side-menu { background-color: var(--leather-dark); color: #f6ecd3; box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3); }
+.side-menu-title { color: #f6ecd3; opacity: 0.85; }
+.nav-item { color: #f6ecd3; }
+.nav-item:hover, .nav-item.active { background-color: var(--wax); }
+
+input, select, textarea {
+    background-color: #f7efd9;
+    color: var(--ink);
+    border: 1px solid var(--gold);
+    font-family: Georgia, 'Times New Roman', serif;
+}
+
+.data-table th { background-color: var(--wax); color: #f6ecd3; }
+.data-table td, .data-table th { border-bottom-color: var(--parchment-dark); }
+.data-table tr:nth-child(even) td { background-color: rgba(212, 191, 146, 0.25); }
+.data-table tfoot th { background-color: var(--parchment-dark); color: var(--leather-dark); }
+
+.modal, .item-popover, .ticket-panel { background-color: var(--parchment-light); color: var(--ink); border-color: var(--gold); }
+.ticket-send-bar { background-color: var(--parchment-light); }
+.ticket-row { border-bottom-color: var(--parchment-dark); }
+.ticket-row:hover { background-color: rgba(212, 191, 146, 0.35); }
+.ticket-row.selected { background-color: #dcc9a0; border-left-color: var(--wax); }
+.ticket-editor { border-top-color: var(--wax); }
+.queue-card, .card.ticket-card { background-color: var(--parchment-light); }
+.stat-card { background-color: var(--parchment); border-color: var(--gold); }
+.stat-card span { color: var(--leather); }
+.order-item-card { background-color: var(--parchment); }
+.kitchen-column h3 { color: var(--leather-dark); }
+
+.status-note { color: #8b1e1e; }
+.drink-alert { background-color: #a0561a; color: #f6ecd3; }
+.ticket-badge { background-color: var(--leather); color: #f6ecd3; }
+.ticket-badge.sent-badge { background-color: #8b1e1e; color: #f6ecd3; }
+.ticket-notes { color: var(--leather); }
+.ticket-hint { color: var(--leather); }
+.ticket-row.sent { background-color: #ead2b4; color: #7b2a1a; }
+.ticket-row.sent .ticket-notes { color: #7b2a1a; }
+
+.grid-buttons { background: transparent; }
+.login-container .card { background-color: var(--parchment-light); }
+
+/* Parchment: headings and the content area */
+.main-content { background-color: transparent !important; }
+.container { background: transparent; }
+h2 { color: var(--leather-dark) !important; border-bottom: 2px solid var(--gold) !important; }
+.card h2 { color: var(--leather-dark) !important; border-bottom-color: var(--gold) !important; }
+.login-container h2 { color: var(--leather-dark) !important; }
+th { background-color: var(--wax) !important; color: #f6ecd3 !important; }
+td { border-color: var(--parchment-dark) !important; }

@@ -1,5 +1,6 @@
+from datetime import date
 from typing import Optional
-from sqlalchemy import Integer, String, Boolean
+from sqlalchemy import Integer, String, Boolean, Date
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -15,3 +16,8 @@ class Employee(Base):
     role: Mapped[str] = mapped_column(String)
     pin_hash: Mapped[str] = mapped_column(String)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    dob: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    hire_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    positions: Mapped[str] = mapped_column(String, default="")  # comma-separated list of roles this person can work
+    ssn_last: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # the digit shown in the masked SSN

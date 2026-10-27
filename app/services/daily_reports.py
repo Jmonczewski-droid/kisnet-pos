@@ -7,7 +7,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import Order, OrderItem
+from app.core.time import utcnow
+from app.models import Order, OrderItem, Party, TimeEntry
 from app.services.stats import _business_day, day_stats
 
 
@@ -89,7 +90,29 @@ def end_of_day(session: Session, day) -> dict:
     files["hourly"] = str(folder / "hourly.csv")
 
     weekly = _maybe_weekly_report(session, summary["date"])
-    return {"date": summary["date"].isoformat(), "folder": str(folder), "files": files, "weekly": weekly}
+    reset = reset_for_new_day(session)
+    return {"date": summary["date"].isoformat(), "folder": str(folder), "files": files, "weekly": weekly, "reset": reset}
+
+
+def reset_for_new_day(session: Session) -> dict:
+    """Clock everyone out, complete open orders, close open tables. Employees, menu and history are kept."""
+    now = utcnow()
+    clocked_out = 0
+    for entry in session.query(TimeEntry).filter(TimeEntry.clocked_out_at.is_(None)).all():
+        entry.clocked_out_at = now
+        entry.token_hash = None
+        clocked_out += 1
+    orders_completed = 0
+    for order in session.query(Order).filter(Order.status == "open").all():
+        order.status = "completed"
+        order.completed_at = now
+        orders_completed += 1
+    tables_closed = 0
+    for party in session.query(Party).filter(Party.closed_at.is_(None)).all():
+        party.closed_at = now
+        tables_closed += 1
+    session.commit()
+    return {"clocked_out": clocked_out, "orders_completed": orders_completed, "tables_closed": tables_closed}
 
 
 def _export_root() -> Path:

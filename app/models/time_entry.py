@@ -12,3 +12,4 @@ class TimeEntry(Base):
     clocked_in_at: Mapped[DateTime] = mapped_column(DateTime)
     clocked_out_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)
     token_hash: Mapped[Optional[str]] = mapped_column(String, unique=True, nullable=True)
+    position: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # the role chosen for this shift
