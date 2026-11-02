@@ -1,6 +1,6 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
-from sqlalchemy import Integer, String, Boolean, Date
+from sqlalchemy import Integer, String, Boolean, Date, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -21,3 +21,4 @@ class Employee(Base):
     hire_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     positions: Mapped[str] = mapped_column(String, default="")  # comma-separated list of roles this person can work
     ssn_last: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # the digit shown in the masked SSN
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # set when the employee is archived (terminated); never cleared

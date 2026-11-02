@@ -1,5 +1,6 @@
 from typing import List, Optional
-from sqlalchemy import Integer, String, Boolean, Float, ForeignKey
+from datetime import datetime
+from sqlalchemy import Integer, String, Boolean, Float, ForeignKey, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
@@ -12,6 +13,7 @@ class MenuItem(Base):
     category: Mapped[str] = mapped_column(String)
     price_cents: Mapped[int] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # set when the recipe is retired; never cleared
     
     recipe_lines: Mapped[List["RecipeLine"]] = relationship(
         "RecipeLine", 
