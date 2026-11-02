@@ -36,6 +36,9 @@ def test_add_employee_gets_code_and_masked_ssn(api, login):
     assert ruth["positions"] == ["server", "bartender"]
     assert ruth["ssn"] == "XXX-XX-XXX5"
     assert ruth["address"] == "12 Oak Street"
+    # the System screen shows these; a missing key breaks the whole roster
+    assert ruth["week_hours"] == 0
+    assert ruth["on_clock"] is False and ruth["clocked_in_at"] is None
 
 
 def test_multi_position_employee_must_choose_position_at_clock_in(api, login, db):

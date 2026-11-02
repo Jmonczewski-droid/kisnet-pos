@@ -265,13 +265,15 @@ def archive_employee(session: Session, employee_id: int) -> Employee:
 
 def roster(session: Session, include_archived: bool = False) -> List[dict]:
     """Get employee roster with status information."""
+    from app.services.timecard import employee_week
     query = session.query(Employee).order_by(Employee.name)
-    
+
     if not include_archived:
         query = query.filter(Employee.archived_at.is_(None))
-    
+
     result = []
     for employee in query.all():
+        entry = open_entry_for(session, employee.id)
         row = {
             "id": employee.id,
             "code": employee.code,
@@ -282,7 +284,9 @@ def roster(session: Session, include_archived: bool = False) -> List[dict]:
             "hire_date": employee.hire_date,
             "ssn": f"XXX-XX-XXX{employee.ssn_last or ''}",
             "active": employee.active,
-            "on_clock": open_entry_for(session, employee.id) is not None,
+            "on_clock": entry is not None,
+            "clocked_in_at": entry.clocked_in_at if entry else None,
+            "week_hours": employee_week(session, employee, None)["total_hours"],
             "status": employee_status(employee),
             "archived_at": employee.archived_at.isoformat() if employee.archived_at else None,
         }
