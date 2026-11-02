@@ -846,8 +846,27 @@ function renderCommand(root) {
     }, 10000);
 }
 
-// System > Employees (admin): roster with oversight information, and adding an employee
+// System > Employees and Recipes (admin): edit, deactivate, reactivate and archive
 const POSITION_OPTIONS = ['admin', 'host', 'server', 'bartender', 'kitchen'];
+const ACTION_DONE = { deactivate: 'Deactivated', reactivate: 'Reactivated', archive: 'Archived' };
+let rosterRows = [];
+let recipeRows = [];
+let editingRecipeId = null;
+
+// Buttons for one roster or recipe row. Archived rows are read only.
+function rowActions(status, id) {
+    if (status === 'archived') return '<em>Archived</em>';
+    const edit = `<button class="btn-large" data-action="edit" data-id="${id}">Edit</button>`;
+    const toggle = status === 'active'
+        ? `<button class="btn-large" data-action="deactivate" data-id="${id}">Deactivate</button>`
+        : `<button class="btn-large" data-action="reactivate" data-id="${id}">Reactivate</button>`;
+    const archive = `<button class="btn-large" data-action="archive" data-id="${id}">Archive</button>`;
+    return edit + toggle + archive;
+}
+
+function statusLabel(status) {
+    return status.charAt(0).toUpperCase() + status.slice(1);
+}
 
 function renderEmployees(root) {
     root.innerHTML = `
@@ -855,36 +874,43 @@ function renderEmployees(root) {
             <h2>Employees</h2>
             <div class="week-nav">
                 <button id="emp-add-toggle" class="btn-large">Add employee</button>
+                <label class="checkbox-row"><input type="checkbox" id="emp-show-archived"> Show archived</label>
             </div>
-            <div id="emp-add-form"></div>
+            <div id="emp-form"></div>
             <p id="emp-status" class="status-note"></p>
             <div id="emp-roster"></div>
         </div>`;
-    document.getElementById('emp-add-toggle').addEventListener('click', showAddEmployeeForm);
+    document.getElementById('emp-add-toggle').addEventListener('click', () => showEmployeeForm(null));
+    document.getElementById('emp-show-archived').addEventListener('change', loadRoster);
+    document.getElementById('emp-roster').addEventListener('click', handleRosterClick);
     loadRoster();
 }
 
 function loadRoster() {
     const box = document.getElementById('emp-roster');
     if (!box) return;
-    api('/api/v1/admin/roster')
+    const archived = document.getElementById('emp-show-archived').checked;
+    api(`/api/v1/admin/roster?include_archived=${archived}`)
         .then(rows => {
+            rosterRows = rows;
             const money = hours => `${hours.toFixed(2)} h`;
             box.innerHTML = `
                 <table class="data-table">
-                    <thead><tr><th>Code</th><th>Name</th><th>Positions</th><th>Hire date</th><th>SSN</th>
-                        <th>On clock</th><th>Hours this week</th><th>Address</th><th>DOB</th></tr></thead>
+                    <thead><tr><th>Code</th><th>Name</th><th>Positions</th><th>Status</th><th>Hire date</th><th>SSN</th>
+                        <th>On clock</th><th>Hours this week</th><th>Address</th><th>DOB</th><th></th></tr></thead>
                     <tbody>${rows.map(row => `
-                        <tr>
+                        <tr style="${row.status === 'archived' ? 'opacity: 0.6' : ''}">
                             <td>${escapeHtml(row.code)}</td>
                             <td>${escapeHtml(row.name)}</td>
                             <td>${row.positions.map(roleLabel).join(', ')}</td>
+                            <td>${statusLabel(row.status)}</td>
                             <td>${row.hire_date || ''}</td>
                             <td>${escapeHtml(row.ssn)}</td>
                             <td>${row.on_clock ? 'Yes' : ''}</td>
                             <td>${money(row.week_hours)}</td>
                             <td>${escapeHtml(row.address || '')}</td>
                             <td>${row.dob || ''}</td>
+                            <td>${rowActions(row.status, row.id)}</td>
                         </tr>`).join('')}</tbody>
                 </table>`;
         })
@@ -893,53 +919,82 @@ function loadRoster() {
         });
 }
 
-function showAddEmployeeForm() {
-    const form = document.getElementById('emp-add-form');
+function handleRosterClick(event) {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const id = Number(button.dataset.id);
+    const row = rosterRows.find(item => item.id === id);
+    const action = button.dataset.action;
+    if (action === 'edit') { showEmployeeForm(row); return; }
+    if (action === 'archive' && !window.confirm(`Archive ${row.name}? They will be removed from the roster and cannot log in. The record is kept.`)) return;
+    const status = document.getElementById('emp-status');
+    const form = document.getElementById('emp-form');
+    api(`/api/v1/admin/employees/${id}/${action}`, { method: 'POST' })
+        .then(() => {
+            if (form.dataset.editing === String(id)) form.innerHTML = '';
+            status.textContent = `${ACTION_DONE[action]} ${row.name}.`;
+            loadRoster();
+        })
+        .catch(error => { status.textContent = `Could not ${action} ${row.name}: ${error.message}`; });
+}
+
+// Add form when employee is null; otherwise the same form prefilled for editing (PIN blank keeps the current one)
+function showEmployeeForm(employee) {
+    const editing = employee !== null;
+    const form = document.getElementById('emp-form');
+    form.dataset.editing = editing ? String(employee.id) : '';
+    const held = editing ? employee.positions : [];
     form.innerHTML = `
-        <div class="form-group"><label for="emp-name">Name</label><input type="text" id="emp-name"></div>
-        <div class="form-group"><label for="emp-address">Address</label><input type="text" id="emp-address"></div>
-        <div class="form-group"><label for="emp-dob">Date of birth</label><input type="date" id="emp-dob"></div>
-        <div class="form-group"><label for="emp-hire">Hire date</label><input type="date" id="emp-hire" value="${isoDay(new Date())}"></div>
+        <div class="form-group"><label for="emp-name">Name</label><input type="text" id="emp-name" value="${editing ? escapeHtml(employee.name) : ''}"></div>
+        <div class="form-group"><label for="emp-address">Address</label><input type="text" id="emp-address" value="${editing ? escapeHtml(employee.address || '') : ''}"></div>
+        <div class="form-group"><label for="emp-dob">Date of birth</label><input type="date" id="emp-dob" value="${editing && employee.dob ? employee.dob : ''}"></div>
+        <div class="form-group"><label for="emp-hire">Hire date</label><input type="date" id="emp-hire" value="${editing ? (employee.hire_date || '') : isoDay(new Date())}"></div>
         <fieldset class="form-group">
             <legend>Positions (tick every job this person can do)</legend>
             ${POSITION_OPTIONS.map(role => `
-                <label class="checkbox-row"><input type="checkbox" class="emp-position" value="${role}"> ${roleLabel(role)}</label>`).join('')}
+                <label class="checkbox-row"><input type="checkbox" class="emp-position" value="${role}"${held.includes(role) ? ' checked' : ''}> ${roleLabel(role)}</label>`).join('')}
         </fieldset>
-        <div class="form-group"><label for="emp-pin">PIN (4 digits or more)</label><input type="password" id="emp-pin" value="1234"></div>
-        <button id="emp-save" class="btn-large">Save employee</button>
+        <div class="form-group"><label for="emp-pin">${editing ? 'PIN (leave blank to keep)' : 'PIN (4 digits or more)'}</label>
+            <input type="password" id="emp-pin" value="${editing ? '' : '1234'}"></div>
+        <button id="emp-save" class="btn-large">${editing ? 'Save changes' : 'Save employee'}</button>
         <button id="emp-cancel" class="btn-large">Cancel</button>`;
     document.getElementById('emp-cancel').addEventListener('click', () => { form.innerHTML = ''; });
-    document.getElementById('emp-save').addEventListener('click', saveEmployee);
+    document.getElementById('emp-save').addEventListener('click', () => saveEmployee(editing ? employee.id : null));
+    document.getElementById('emp-name').focus();
 }
 
-function saveEmployee() {
+function saveEmployee(id) {
     const positions = [...document.querySelectorAll('.emp-position:checked')].map(box => box.value);
     const name = document.getElementById('emp-name').value.trim();
     if (!name) { alert('Enter the name'); return; }
     if (positions.length === 0) { alert('Tick at least one position'); return; }
+    const pin = document.getElementById('emp-pin').value;
     const body = {
         name,
         address: document.getElementById('emp-address').value.trim() || null,
         dob: document.getElementById('emp-dob').value || null,
         hire_date: document.getElementById('emp-hire').value || null,
-        positions,
-        pin: document.getElementById('emp-pin').value
+        positions
     };
-    api('/api/v1/admin/employees', { method: 'POST', body: JSON.stringify(body) })
-        .then(created => {
-            document.getElementById('emp-add-form').innerHTML = '';
-            document.getElementById('emp-status').textContent = `Added ${created.code} ${created.name}.`;
+    if (pin || id === null) body.pin = pin;
+    const request = id === null
+        ? api('/api/v1/admin/employees', { method: 'POST', body: JSON.stringify(body) })
+        : api(`/api/v1/admin/employees/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+    request
+        .then(saved => {
+            document.getElementById('emp-form').innerHTML = '';
+            document.getElementById('emp-status').textContent = `${id === null ? 'Added' : 'Saved'} ${saved.code} ${saved.name}.`;
             loadRoster();
         })
-        .catch(error => alert('Could not add the employee: ' + error.message));
+        .catch(error => alert(`Could not save the employee: ${error.message}`));
 }
 
-// System > Recipes (admin): add a recipe with its price; its category decides where it is made
 function renderRecipes(root) {
+    editingRecipeId = null;
     root.innerHTML = `
         <div class="card">
             <h2>Recipes</h2>
-            <h3>Add a recipe</h3>
+            <h3 id="rec-form-title">Add a recipe</h3>
             <div class="form-group"><label for="rec-name">Name</label><input type="text" id="rec-name"></div>
             <div class="form-group">
                 <label for="rec-category">Category</label>
@@ -955,25 +1010,58 @@ function renderRecipes(root) {
             <div id="rec-ingredients"></div>
             <button id="rec-add-ingredient" class="btn-large">Add ingredient</button>
             <button id="rec-save" class="btn-large">Save recipe</button>
+            <button id="rec-cancel" class="btn-large" hidden>Cancel edit</button>
             <p id="rec-status" class="status-note"></p>
             <h3>Recipes on the menu</h3>
+            <label class="checkbox-row"><input type="checkbox" id="rec-show-archived"> Show archived</label>
             <div id="rec-list"></div>
         </div>`;
     addIngredientRow();
-    document.getElementById('rec-add-ingredient').addEventListener('click', addIngredientRow);
+    document.getElementById('rec-add-ingredient').addEventListener('click', () => addIngredientRow());
     document.getElementById('rec-save').addEventListener('click', saveRecipe);
+    document.getElementById('rec-cancel').addEventListener('click', resetRecipeForm);
+    document.getElementById('rec-show-archived').addEventListener('change', loadRecipeList);
+    document.getElementById('rec-list').addEventListener('click', handleRecipeClick);
     loadRecipeList();
 }
 
-function addIngredientRow() {
+function addIngredientRow(line = { ingredient: '', qty: '', unit: '' }) {
     const box = document.getElementById('rec-ingredients');
     const row = document.createElement('div');
     row.className = 'ingredient-row';
     row.innerHTML = `
-        <input type="text" class="ing-name" placeholder="Ingredient">
-        <input type="number" class="ing-qty" min="0" step="0.1" placeholder="Qty">
-        <input type="text" class="ing-unit" placeholder="Unit (oz, each)">`;
+        <input type="text" class="ing-name" placeholder="Ingredient" value="${escapeHtml(line.ingredient)}">
+        <input type="number" class="ing-qty" min="0" step="0.1" placeholder="Qty" value="${line.qty}">
+        <input type="text" class="ing-unit" placeholder="Unit (oz, each)" value="${escapeHtml(line.unit)}">`;
     box.appendChild(row);
+}
+
+// Back to the empty add form (after saving, or cancelling an edit)
+function resetRecipeForm() {
+    editingRecipeId = null;
+    document.getElementById('rec-form-title').textContent = 'Add a recipe';
+    document.getElementById('rec-save').textContent = 'Save recipe';
+    document.getElementById('rec-cancel').hidden = true;
+    document.getElementById('rec-name').value = '';
+    document.getElementById('rec-category').value = 'bar';
+    document.getElementById('rec-price').value = '';
+    document.getElementById('rec-ingredients').innerHTML = '';
+    addIngredientRow();
+}
+
+function startRecipeEdit(recipe) {
+    resetRecipeForm();
+    editingRecipeId = recipe.id;
+    document.getElementById('rec-form-title').textContent = `Edit ${recipe.name}`;
+    document.getElementById('rec-save').textContent = 'Save changes';
+    document.getElementById('rec-cancel').hidden = false;
+    document.getElementById('rec-name').value = recipe.name;
+    document.getElementById('rec-category').value = recipe.category;
+    document.getElementById('rec-price').value = (recipe.price_cents / 100).toFixed(2);
+    document.getElementById('rec-ingredients').innerHTML = '';
+    recipe.ingredients.forEach(line => addIngredientRow(line));
+    if (recipe.ingredients.length === 0) addIngredientRow();
+    document.getElementById('rec-name').focus();
 }
 
 function saveRecipe() {
@@ -987,17 +1075,16 @@ function saveRecipe() {
     const status = document.getElementById('rec-status');
     if (!name || !(price >= 0)) { status.textContent = 'Enter a name and a price.'; return; }
     if (ingredients.some(line => !(line.qty > 0) || !line.unit)) { status.textContent = 'Each ingredient needs a quantity and a unit.'; return; }
-    api('/api/v1/admin/recipes', {
-        method: 'POST',
-        body: JSON.stringify({ name, category: document.getElementById('rec-category').value,
-                               price_cents: Math.round(price * 100), ingredients })
-    })
-        .then(created => {
-            status.textContent = `Added ${created.name} at $${(created.price_cents / 100).toFixed(2)}.`;
-            document.getElementById('rec-name').value = '';
-            document.getElementById('rec-price').value = '';
-            document.getElementById('rec-ingredients').innerHTML = '';
-            addIngredientRow();
+    const id = editingRecipeId;
+    const body = JSON.stringify({ name, category: document.getElementById('rec-category').value,
+                                  price_cents: Math.round(price * 100), ingredients });
+    const request = id === null
+        ? api('/api/v1/admin/recipes', { method: 'POST', body })
+        : api(`/api/v1/admin/recipes/${id}`, { method: 'PUT', body });
+    request
+        .then(saved => {
+            status.textContent = `${id === null ? 'Added' : 'Saved'} ${saved.name} at $${(saved.price_cents / 100).toFixed(2)}.`;
+            resetRecipeForm();
             loadRecipeList();
         })
         .catch(error => { status.textContent = `Could not save: ${error.message}`; });
@@ -1006,23 +1093,45 @@ function saveRecipe() {
 function loadRecipeList() {
     const box = document.getElementById('rec-list');
     if (!box) return;
-    api('/api/v1/admin/recipes')
+    const archived = document.getElementById('rec-show-archived').checked;
+    api(`/api/v1/admin/recipes?include_archived=${archived}`)
         .then(recipes => {
+            recipeRows = recipes;
             box.innerHTML = `
                 <table class="data-table">
-                    <thead><tr><th>Name</th><th>Category</th><th>Price</th><th>Ingredients</th></tr></thead>
+                    <thead><tr><th>Name</th><th>Category</th><th>Price</th><th>Ingredients</th><th>Status</th><th></th></tr></thead>
                     <tbody>${recipes.map(recipe => `
-                        <tr>
+                        <tr style="${recipe.status === 'archived' ? 'opacity: 0.6' : ''}">
                             <td>${escapeHtml(recipe.name)}</td>
                             <td>${escapeHtml(roleLabel(recipe.category))}</td>
                             <td>$${(recipe.price_cents / 100).toFixed(2)}</td>
                             <td>${recipe.ingredients.map(line => `${line.qty} ${escapeHtml(line.unit)} ${escapeHtml(line.ingredient)}`).join(', ')}</td>
+                            <td>${statusLabel(recipe.status)}</td>
+                            <td>${rowActions(recipe.status, recipe.id)}</td>
                         </tr>`).join('')}</tbody>
                 </table>`;
         })
         .catch(error => {
             box.innerHTML = `<p class="status-note">Could not load recipes (${escapeHtml(error.message)}).</p>`;
         });
+}
+
+function handleRecipeClick(event) {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const id = Number(button.dataset.id);
+    const recipe = recipeRows.find(item => item.id === id);
+    const action = button.dataset.action;
+    if (action === 'edit') { startRecipeEdit(recipe); return; }
+    if (action === 'archive' && !window.confirm(`Archive ${recipe.name}? It will be removed from the menu for good. Past sales are kept.`)) return;
+    const status = document.getElementById('rec-status');
+    api(`/api/v1/admin/recipes/${id}/${action}`, { method: 'POST' })
+        .then(() => {
+            if (editingRecipeId === id) resetRecipeForm();
+            status.textContent = `${ACTION_DONE[action]} ${recipe.name}.`;
+            loadRecipeList();
+        })
+        .catch(error => { status.textContent = `Could not ${action} ${recipe.name}: ${error.message}`; });
 }
 
 // Daily Summary (admin): totals for one business day, items by popularity, and the End of Day export
