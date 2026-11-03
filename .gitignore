@@ -71,3 +71,6 @@ config.local.py
 *.temp
 # End-of-day exports
 exports/
+
+# AI task feedback
+.qwen/failed/

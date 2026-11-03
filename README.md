@@ -1,8 +1,50 @@
 # KISnet-POS
 
-Lightweight restaurant POS: FastAPI backend, SQLAlchemy/Alembic, and a no-build vanilla JS front end.
-Stations: Admin (Command Center + Reports), Host, Server, Bar, Kitchen. Spec: `docs/KISnet-POS.txt`
-and `docs/KISnet-POS-Requirements.md`.
+A restaurant point-of-sale (POS) system built around how a dining room actually runs: guests are seated, orders are placed and changed, the kitchen and bar work their tickets, tables are cleared, and the manager sees sales, labor, and food usage at the end of the day.
+
+## Why I built it
+
+I spent 16 years running restaurants: as a General Manager, as a training-store manager, and as an Area Supervisor over as many as six locations. In that time I opened new stores, led technology installations, and trained managers and crews on the systems they used every shift. I saw firsthand where a POS helps a crew and where it gets in the way.
+
+KISnet-POS is my answer to that. I wrote the workflow document first, as an operator, describing each station the way the people working it would describe it. Then I built the software to match that document, not the other way around. The original workflow is in [`docs/KISnet-POS.txt`](docs/KISnet-POS.txt), and the formal requirements derived from it are in [`docs/KISnet-POS-Requirements.md`](docs/KISnet-POS-Requirements.md).
+
+## What it does
+
+| Station | What the employee sees and does |
+|---|---|
+| **Host** | A 4x4 floor map (tables A1-D4). Creates a party with table, assigned server, name, and party size, which starts the table's timer. |
+| **Server** | A drop-down of only their assigned tables. Places and edits orders; drinks route to the bar and food routes to the kitchen automatically. |
+| **Bar** | Ten bar seats (Z1-Z10) plus a live drink-ticket list. Bartenders seat their own guests and ring their own orders. |
+| **Kitchen** | Three ticket tracks (Appetizers, Hot, Cold) with running ticket times and table numbers. Changes after send are flagged `CHANGED`/`NEW`; removed items show as `VOID`. |
+| **Admin** | A Command Center showing who is on the clock, plus menu and recipe management, employee lifecycle (edit, deactivate, archive), time cards, and daily sales and food-usage reports. |
+
+Every employee clocks in with their own code and PIN and lands on the screen for their job.
+
+## Built for real operations
+
+- **Accurate money:** all prices and totals are stored in whole cents, so there are no rounding errors in sales reports.
+- **Price snapshots:** each item's name, price, and recipe are saved at the moment of sale, so changing the menu never rewrites past sales.
+- **Secure logins:** employee PINs are hashed (PBKDF2), never stored as plain text.
+- **Food-usage reporting:** recipes are stored with ingredient quantities, so sales turn directly into a food-usage report, the same way a manager tracks food cost.
+- **Labor tracking:** clock-in/out, weekly hours per employee, and an admin view of everyone's hours.
+- **Multi-location ready:** records carry a location ID so the system can grow beyond one store.
+- **Business-day simulation:** [`tools/simulate_business_day.py`](tools/simulate_business_day.py) runs a full day of tickets through the same API the screens use, so reports can be checked against a realistic day.
+
+## Tech stack
+
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic migrations, Pydantic
+- **Database:** SQLite by default; PostgreSQL can be configured through a SQLAlchemy URL (not yet tested)
+- **Front end:** plain HTML, CSS, and JavaScript, with no build step
+- **Testing:** 98 automated tests with pytest, including an end-to-end acceptance test of the full workflow through the HTTP API
+
+## How it was built
+
+I acted as product owner and project manager, and used AI coding agents and local language models as the development team. I broke the requirements into a queue of small, numbered tasks with shared conventions (see [`.qwen/`](.qwen/)). Each task had a defined scope and had to pass its tests before it was accepted; tasks that failed were sent back with written feedback. This is the same approach I used for store rollouts: clear standards, small steps, and checking the result before moving on.
+
+## Screenshots
+
+<!-- Add screenshots here, e.g. ![Host screen](docs/screenshots/host.png) -->
+Coming soon.
 
 ## Setup
 
@@ -84,6 +126,8 @@ tests/
 .qwen/        task queue and conventions used to generate the code
 ```
 
-## Known limits
+## Roadmap
 
--Long term usage effects on system and database
+- Payments and checkout
+- Nightly database backups
+- Long-term load testing of the system and database

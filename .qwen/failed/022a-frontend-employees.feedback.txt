@@ -1,1 +1,0 @@
-The verify command `node --check app/static/app.js && grep -q 'emp-edit' app/static/app.js && grep -q 'emp-archive' app/static/app.js && grep -q 'emp-show-archived' app/static/app.js` FAILED with:
