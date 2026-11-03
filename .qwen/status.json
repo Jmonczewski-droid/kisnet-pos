@@ -1,0 +1,11 @@
+{
+  "019-lifecycle-models": "done",
+  "020-employee-lifecycle": "failed",
+  "020a-employee-service": "done",
+  "020b-employee-routes": "done",
+  "020c-employee-tests": "done",
+  "021a-recipe-service": "done",
+  "021b-recipe-routes-tests": "done",
+  "022-frontend-lifecycle": "failed",
+  "022a-frontend-employees": "failed"
+}
