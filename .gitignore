@@ -73,4 +73,4 @@ config.local.py
 exports/
 
 # AI task feedback
-.qwen/failed/
+.qwen/

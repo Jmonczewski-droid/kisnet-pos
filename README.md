@@ -39,7 +39,7 @@ Every employee clocks in with their own code and PIN and lands on the screen for
 
 ## How it was built
 
-I acted as product owner and project manager, and used AI coding agents and local language models as the development team. I broke the requirements into a queue of small, numbered tasks with shared conventions (see [`.qwen/`](.qwen/)). Each task had a defined scope and had to pass its tests before it was accepted; tasks that failed were sent back with written feedback. This is the same approach I used for store rollouts: clear standards, small steps, and checking the result before moving on.
+I acted as product owner and project manager, and used AI coding agents and local language models as the development team. I broke the requirements into a queue of small, numbered tasks with shared conventions. Each task had a defined scope and had to pass its tests before it was accepted; tasks that failed were sent back with written feedback. This is the same approach I used for store rollouts: clear standards, small steps, and checking the result before moving on.
 
 ## Screenshots
 
@@ -123,7 +123,6 @@ app/
   static/     front end (index.html, app.js, styles.css)
 alembic/      migrations (0001_initial through 0003_archive_status)
 tests/
-.qwen/        task queue and conventions used to generate the code
 ```
 
 ## Roadmap
