@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.base import get_db
 from app.services.parties import (
@@ -8,6 +8,7 @@ from app.services.parties import (
     close_party
 )
 from app.api.deps import get_current_employee
+from app.services.devices import print_receipt
 from app.schemas.party import PartyIn, PartyDetail
 
 router = APIRouter()
@@ -56,12 +57,15 @@ def get_party(
 @router.post("/parties/{party_id}/close")
 def close_existing_party(
     party_id: int,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user=Depends(get_current_employee)
 ):
-    """Close an existing party."""
+    """Close an existing party. The guest receipt prints on any receipt printer."""
     try:
-        return close_party(db, user, party_id)
+        detail = close_party(db, user, party_id)
+        background.add_task(print_receipt, party_id)
+        return detail
     except Exception as e:
         if hasattr(e, 'status') and hasattr(e, 'detail'):
             raise HTTPException(status_code=e.status, detail=e.detail)

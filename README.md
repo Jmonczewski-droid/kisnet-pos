@@ -16,7 +16,7 @@ KISnet-POS is my answer to that. I wrote the workflow document first, as an oper
 | **Server** | A drop-down of only their assigned tables. Places and edits orders; drinks route to the bar and food routes to the kitchen automatically. |
 | **Bar** | Ten bar seats (BAR1-BAR10) plus a live drink-ticket list. Bartenders seat their own guests and ring their own orders. |
 | **Kitchen** | Three ticket tracks (Appetizers, Hot, Cold) with running ticket times and table numbers. Changes after send are flagged `CHANGED`/`NEW`; removed items show as `VOID`. |
-| **Admin** | A Command Center showing who is on the clock, plus menu and recipe management, employee lifecycle (edit, deactivate, archive), time cards, and daily sales and food-usage reports. |
+| **Admin** | A Command Center showing who is on the clock, plus menu and recipe management, employee lifecycle (edit, deactivate, archive), device management for printers and screens, time cards, and daily sales and food-usage reports. |
 
 Every employee clocks in with their own code and PIN and lands on the screen for their job.
 
@@ -28,6 +28,8 @@ Every employee clocks in with their own code and PIN and lands on the screen for
 - **Food-usage reporting:** recipes are stored with ingredient quantities, so sales turn directly into a food-usage report, the same way a manager tracks food cost.
 - **Labor tracking:** clock-in/out, weekly hours per employee, and an admin view of everyone's hours.
 - **Multi-location ready:** records carry a location ID so the system can grow beyond one store.
+- **Runs on the devices you already have:** every screen is a web page, so PCs, Android and Apple phones and tablets all work with nothing to install.
+- **Printers and ticket screens:** network kitchen, bar and receipt printers, and any spare screen as a paired ticket monitor, are set up from one Device Management screen.
 - **Business-day simulation:** [`tools/simulate_business_day.py`](tools/simulate_business_day.py) runs a full day of tickets through the same API the screens use, so reports can be checked against a realistic day.
 
 ## Tech stack
@@ -35,7 +37,7 @@ Every employee clocks in with their own code and PIN and lands on the screen for
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic migrations, Pydantic
 - **Database:** SQLite by default; PostgreSQL can be configured through a SQLAlchemy URL (not yet tested)
 - **Front end:** plain HTML, CSS, and JavaScript, with no build step
-- **Testing:** 98 automated tests with pytest, including an end-to-end acceptance test of the full workflow through the HTTP API
+- **Testing:** 124 automated tests with pytest, including an end-to-end acceptance test of the full workflow through the HTTP API
 
 ## How it was built
 
@@ -52,8 +54,12 @@ Coming soon.
 python3.12 -m venv venv
 venv/bin/pip install -r requirements.txt
 venv/bin/python -m app.cli reset-db      # creates tables (Alembic) and loads seed data
-venv/bin/python -m uvicorn app.main:app --port 8000
+venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+`--host 0.0.0.0` lets phones, tablets and screens on the same network open the POS at this computer's
+address (shown on the Device Management screen). Leave it off to keep the POS on this computer only.
+For an existing database, run `venv/bin/alembic upgrade head` after updating to apply new migrations.
 
 Open http://localhost:8000 and clock in with a seed code and PIN.
 
@@ -90,6 +96,22 @@ scenario from the requirements (A11) through the HTTP API.
 4. **Clearing a table:** Send to Payment closes the party and completes its open order. Servers do this for their own tables, bartenders for bar seats, hosts for tables, and admins for any seat. Payment is assumed accepted; this is the hook for later payment integration.
 5. **Bar tickets:** drink items appear as a ticket list on the Bar screen, alongside the BAR1–BAR10 seat circles.
 
+## Device management
+
+Admin > System > **Device Management** is where printers and screens are connected.
+
+- **Printers** are network receipt/kitchen printers (ESC/POS on port 9100). Give each one a name, its IP
+  address, and what it prints: any of the Bar, Apps, Hot and Cold ticket tracks, and/or guest receipts.
+  Tickets print when an order is sent (only the lines that send added, changed or voided). The guest receipt
+  prints when a table is sent to payment. **Test print** checks the connection. A printer that is off or
+  unreachable never blocks an order; the screen shows it as "Not responding" with the reason.
+- **Monitors** turn any browser into a ticket screen with no employee login. Add a monitor, choose the tracks
+  it shows, then on that device open the address shown and enter the 6-character code. Codes work once and
+  expire after 10 minutes. The screen can bump its own tracks. A manager can disconnect it at any time.
+- **Guest receipt layout** is the text file `app/templates/receipt.txt`. Edit it to change the header,
+  footer and layout; the file explains its own rules, and the Device Management screen previews the result.
+  Tax and tips are not calculated yet, so the receipt has no lines for them.
+
 ## Section B suggestions adopted
 
 Money in integer cents, PIN hashing (PBKDF2), item name/price/recipe snapshots at sale time, `location_id` on
@@ -107,6 +129,11 @@ Base path `/api/v1`. Interactive docs at `/docs`.
 - `menu`: `GET /menu`, `GET /menu/export`, `POST /menu/import` (raw CSV body, admin)
 - `timecard`: `GET /timecard?week=` (own entries and hours for the week; defaults to this week in business time), `GET /timecard/summary?week=` (admin: every employee's hours that week)
 - `admin`: `GET /employees?role=`, `GET /admin/on-clock`, `POST /admin/clock-out/{employee_id}`
+- `devices` (admin): `GET|POST /admin/devices`, `PATCH /admin/devices/{id}`,
+  `POST /admin/devices/{id}/deactivate|reactivate|archive|pairing-code|unpair|test`, `GET /admin/receipt-preview`,
+  `GET /admin/server-address`
+- `devices` (a paired monitor, using its own token): `POST /devices/pair`, `GET /devices/me`, `GET /devices/tickets`,
+  `POST /devices/tickets/{order_id}/{track}/bump`, `POST /devices/disconnect`
 - `reports` (admin): `GET /reports/daily-sales`, `GET /reports/food-usage` (both take `start` and `end` as YYYY-MM-DD)
 
 ## Layout
@@ -121,7 +148,8 @@ app/
   services/   business rules (orders, parties, tickets, reports, menu import, seed)
   seed/menu.csv   seed menu with generic recipes (placeholders to review)
   static/     front end (index.html, app.js, styles.css)
-alembic/      migrations (0001_initial through 0003_archive_status)
+  templates/receipt.txt   guest receipt layout (edit this)
+alembic/      migrations (0001_initial through 0004_devices)
 tests/
 ```
 

@@ -7,3 +7,8 @@ BAR_SEATS = [f"BAR{i}" for i in range(1,11)]
 ALL_SEATS = TABLE_SEATS + BAR_SEATS
 # Labor is costed at this rate for every employee on the clock ($10.00 per hour)
 LABOR_RATE_CENTS_PER_HOUR = 1000
+
+# Devices: a monitor shows ticket tracks; a printer prints ticket tracks and/or guest receipts
+DEVICE_KINDS = ("printer", "monitor")
+RECEIPT_JOB = "receipt"
+PRINTER_JOBS = TRACKS + (RECEIPT_JOB,)

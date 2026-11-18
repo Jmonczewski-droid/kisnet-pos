@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_employee, get_db
 from app.services.orders import (
@@ -11,15 +11,23 @@ from app.services.orders import (
     OrderError
 )
 from app.schemas.order import OrderOut, OrderItemsIn, OrderItemPatch, TicketSendIn
-from app.models import Party, OrderItem
+from app.models import Order, Party, OrderItem
+from app.services.devices import print_order_lines
 
 router = APIRouter()
+
+
+def _open_item_ids(db: Session, party_id: int) -> set:
+    """Ids of the lines already on the party's open order (to tell which lines a send adds)."""
+    order = db.query(Order).filter_by(party_id=party_id, status="open").first()
+    return {item.id for item in order.items} if order else set()
 
 
 @router.post("/parties/{party_id}/send", response_model=OrderOut)
 async def send_order_ticket(
     party_id: int,
     ticket: TicketSendIn,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     current_employee = Depends(get_current_employee)
 ):
@@ -28,7 +36,12 @@ async def send_order_ticket(
     if not party:
         raise HTTPException(status_code=404, detail="Party not found")
     try:
+        before = _open_item_ids(db, party_id)
         order = send_ticket(db, current_employee, party, ticket.items, ticket.updates, ticket.voids)
+        # Print only what this send touched: new lines, changed lines and voids
+        touched = ([item.id for item in order.items if item.id not in before]
+                   + [update.item_id for update in ticket.updates] + list(ticket.voids))
+        background.add_task(print_order_lines, order.id, touched)
         return order_out(order)
     except OrderError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)
@@ -38,6 +51,7 @@ async def send_order_ticket(
 async def add_order_items(
     party_id: int,
     items: OrderItemsIn,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     current_employee = Depends(get_current_employee)
 ):
@@ -48,7 +62,9 @@ async def add_order_items(
         raise HTTPException(status_code=404, detail="Party not found")
     
     try:
+        before = _open_item_ids(db, party_id)
         order = add_items(db, current_employee, party, items)
+        background.add_task(print_order_lines, order.id, [item.id for item in order.items if item.id not in before])
         return order_out(order)
     except OrderError as e:
         raise HTTPException(status_code=e.status, detail=e.detail)

@@ -545,3 +545,17 @@ h2 { color: var(--leather-dark) !important; border-bottom: 2px solid var(--gold)
 .login-container h2 { color: var(--leather-dark) !important; }
 th { background-color: var(--wax) !important; color: #f6ecd3 !important; }
 td { border-color: var(--parchment-dark) !important; }
+
+/* Device management */
+.pairing-code { display: block; font-family: monospace; font-size: 28px; font-weight: bold; letter-spacing: 6px; margin: 4px 0; }
+.pairing-input { font-family: monospace; font-size: 28px; letter-spacing: 6px; text-transform: uppercase; max-width: 240px; }
+.connection { font-weight: bold; white-space: nowrap; }
+.connection-ok, .connection-online { color: #2e6b2e; }
+.connection-error, .connection-offline { color: #8b1e1e; }
+.connection-waiting, .connection-untested, .connection-not-paired { color: #7a5a14; }
+.receipt-preview { display: inline-block; background: #fff; color: #111; border: 1px solid #bbb; padding: 14px 16px; font-family: monospace; font-size: 13px; line-height: 1.35; max-width: 100%; overflow-x: auto; }
+.display-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+[hidden] { display: none !important; }
+.form-group label.checkbox-row { display: flex; font-weight: normal; }
+.form-group .checkbox-row input { width: auto; margin: 0; flex: none; }
+@media (max-width: 480px) { .receipt-preview { font-size: 11px; padding: 10px; } }

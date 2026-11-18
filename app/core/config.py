@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     DATABASE_URL: str = "sqlite:///./app.db"
     BUSINESS_TIMEZONE: str = "America/New_York"
+    RECEIPT_TEMPLATE: str = "app/templates/receipt.txt"  # guest receipt layout; edit the file, no restart needed
     EXPORT_DIR: str = "exports"  # end-of-day CSV files, one folder per business day
 
 settings = Settings()

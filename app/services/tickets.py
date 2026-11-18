@@ -45,7 +45,11 @@ def list_tickets(session: Session, user, track: str) -> List[Dict]:
     """
     # Validate access
     ticket_access(user, track)
-    
+    return tickets_for_track(session, track)
+
+
+def tickets_for_track(session: Session, track: str) -> List[Dict]:
+    """Open tickets on one track, oldest first. Callers check access (an employee's role or a paired monitor)."""
     tickets = []
     
     # Get all open orders with related info
@@ -86,7 +90,11 @@ def bump_ticket(session: Session, user, order_id: int, track: str) -> int:
     """
     # Validate access
     ticket_access(user, track)
-    
+    return bump_track(session, order_id, track)
+
+
+def bump_track(session: Session, order_id: int, track: str) -> int:
+    """Bump one order's items on one track. Callers check access."""
     # Get the order
     order = session.get(Order, order_id)
     if not order:

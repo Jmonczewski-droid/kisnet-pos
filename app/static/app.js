@@ -1134,6 +1134,399 @@ function handleRecipeClick(event) {
         .catch(error => { status.textContent = `Could not ${action} ${recipe.name}: ${error.message}`; });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Device management (admin): printers and monitors, and the portal that connects them
+// ---------------------------------------------------------------------------------------------
+const JOB_LABELS = { bar: 'Bar', appetizers: 'Apps', hot: 'Hot', cold: 'Cold', receipt: 'Guest receipts' };
+const CONNECTION_LABELS = {
+    ok: 'Working', error: 'Not responding', untested: 'Not tested yet',
+    online: 'Online', offline: 'Offline', waiting: 'Waiting for device', 'not paired': 'Not connected'
+};
+let deviceRows = [];
+let editingDeviceId = null;
+
+let serverAddress = null;  // this server's address on the local network, once known
+
+// The address other devices should open. If the manager is on the server itself ("localhost"),
+// swap in the server's network address, because localhost means something else on a phone or tablet.
+function networkOrigin() {
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+    if (local && serverAddress && serverAddress.addresses.length > 0) {
+        return `${serverAddress.scheme}://${serverAddress.addresses[0]}:${serverAddress.port}`;
+    }
+    return window.location.origin;
+}
+
+function displayUrl() {
+    return `${networkOrigin()}/#/display`;
+}
+
+function loadServerAddress() {
+    api('/api/v1/admin/server-address')
+        .then(info => {
+            serverAddress = info;
+            const box = document.getElementById('dev-address');
+            if (box) box.textContent = networkOrigin();
+            loadDeviceList();
+        })
+        .catch(() => {});
+}
+
+function renderDevices(root) {
+    editingDeviceId = null;
+    root.innerHTML = `
+        <div class="card">
+            <h2>Device Management</h2>
+            <p>Connect the printers and screens this restaurant uses. Works with PCs, Android and Apple devices, including phones.</p>
+            <p>Phones, tablets and screens on the same network open the POS at <strong id="dev-address"></strong></p>
+            <h3 id="dev-form-title">Add a device</h3>
+            <div class="form-group"><label for="dev-name">Name</label><input type="text" id="dev-name" maxlength="60" placeholder="Kitchen printer, Bar screen..."></div>
+            <div class="form-group">
+                <label for="dev-kind">Type</label>
+                <select id="dev-kind">
+                    <option value="printer">Printer</option>
+                    <option value="monitor">Monitor (ticket screen)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label id="dev-jobs-label">What it prints</label>
+                ${Object.keys(JOB_LABELS).map(job => `
+                    <label class="checkbox-row" data-job="${job}"><input type="checkbox" class="dev-job" value="${job}"> ${JOB_LABELS[job]}</label>`).join('')}
+            </div>
+            <div id="dev-printer-fields">
+                <div class="form-group"><label for="dev-host">Printer network address (IP)</label><input type="text" id="dev-host" placeholder="192.168.1.50"></div>
+                <div class="form-group"><label for="dev-port">Port</label><input type="number" id="dev-port" min="1" max="65535" value="9100"></div>
+            </div>
+            <button id="dev-save" class="btn-large">Add device</button>
+            <button id="dev-cancel" class="btn-large" hidden>Cancel edit</button>
+            <p id="dev-status" class="status-note"></p>
+            <h3>Connected devices</h3>
+            <label class="checkbox-row"><input type="checkbox" id="dev-show-archived"> Show archived</label>
+            <div id="dev-list"></div>
+            <h3>Guest receipt</h3>
+            <p>The receipt layout is the file <code>app/templates/receipt.txt</code> on the server. This is how it prints now:</p>
+            <pre id="dev-receipt" class="receipt-preview"></pre>
+        </div>`;
+    document.getElementById('dev-kind').addEventListener('change', syncDeviceForm);
+    document.getElementById('dev-save').addEventListener('click', saveDevice);
+    document.getElementById('dev-cancel').addEventListener('click', resetDeviceForm);
+    document.getElementById('dev-show-archived').addEventListener('change', loadDeviceList);
+    document.getElementById('dev-list').addEventListener('click', handleDeviceClick);
+    syncDeviceForm();
+    document.getElementById('dev-address').textContent = networkOrigin();
+    loadDeviceList();
+    loadReceiptPreview();
+    loadServerAddress();
+    // Keep connection status current while the screen is open
+    window.KIS.devicesInterval = setInterval(loadDeviceList, 5000);
+}
+
+// Printers have an address and can print receipts; monitors have neither
+function syncDeviceForm() {
+    const isPrinter = document.getElementById('dev-kind').value === 'printer';
+    document.getElementById('dev-printer-fields').hidden = !isPrinter;
+    document.getElementById('dev-jobs-label').textContent = isPrinter ? 'What it prints' : 'What it shows';
+    const receipt = document.querySelector('.checkbox-row[data-job="receipt"]');
+    receipt.hidden = !isPrinter;
+    if (!isPrinter) receipt.querySelector('input').checked = false;
+}
+
+function resetDeviceForm() {
+    editingDeviceId = null;
+    document.getElementById('dev-form-title').textContent = 'Add a device';
+    document.getElementById('dev-save').textContent = 'Add device';
+    document.getElementById('dev-cancel').hidden = true;
+    document.getElementById('dev-name').value = '';
+    document.getElementById('dev-kind').disabled = false;
+    document.getElementById('dev-host').value = '';
+    document.getElementById('dev-port').value = '9100';
+    document.querySelectorAll('.dev-job').forEach(box => { box.checked = false; });
+    syncDeviceForm();
+}
+
+function startDeviceEdit(device) {
+    resetDeviceForm();
+    editingDeviceId = device.id;
+    document.getElementById('dev-form-title').textContent = `Edit ${device.name}`;
+    document.getElementById('dev-save').textContent = 'Save changes';
+    document.getElementById('dev-cancel').hidden = false;
+    document.getElementById('dev-name').value = device.name;
+    document.getElementById('dev-kind').value = device.kind;
+    document.getElementById('dev-kind').disabled = true;  // a printer cannot become a monitor
+    document.getElementById('dev-host').value = device.host || '';
+    document.getElementById('dev-port').value = device.port || 9100;
+    syncDeviceForm();
+    document.querySelectorAll('.dev-job').forEach(box => { box.checked = device.jobs.includes(box.value); });
+    document.getElementById('dev-name').focus();
+}
+
+function saveDevice() {
+    const status = document.getElementById('dev-status');
+    const name = document.getElementById('dev-name').value.trim();
+    const kind = document.getElementById('dev-kind').value;
+    const jobs = [...document.querySelectorAll('.dev-job:checked')].map(box => box.value);
+    const host = document.getElementById('dev-host').value.trim();
+    const port = parseInt(document.getElementById('dev-port').value, 10);
+    if (!name) { status.textContent = 'Give the device a name.'; return; }
+    if (jobs.length === 0) { status.textContent = `Choose what this ${kind} ${kind === 'printer' ? 'prints' : 'shows'}.`; return; }
+    if (kind === 'printer' && !host) { status.textContent = 'Enter the printer\'s network address.'; return; }
+    const body = { name, jobs };
+    if (kind === 'printer') { body.host = host; body.port = port || 9100; }
+    const id = editingDeviceId;
+    if (id === null) body.kind = kind;
+    const request = id === null
+        ? api('/api/v1/admin/devices', { method: 'POST', body: JSON.stringify(body) })
+        : api(`/api/v1/admin/devices/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+    request
+        .then(saved => {
+            status.textContent = id !== null ? `Saved ${saved.name}.`
+                : saved.kind === 'monitor' ? `Added ${saved.name}. Enter its code on the screen to connect it.`
+                : `Added ${saved.name}. Press Test print to check it.`;
+            resetDeviceForm();
+            loadDeviceList();
+        })
+        .catch(error => { status.textContent = `Could not save: ${error.message}`; });
+}
+
+function deviceDetail(device) {
+    if (device.kind === 'printer') {
+        const where = `${escapeHtml(device.host)}:${device.port}`;
+        return device.last_error ? `${where}<br><span class="status-note">${escapeHtml(device.last_error)}</span>` : where;
+    }
+    if (device.pairing_code) {
+        return `On the device, open <strong>${escapeHtml(displayUrl())}</strong> and enter
+                <span class="pairing-code">${escapeHtml(device.pairing_code)}</span>
+                <small>Code expires ${fmtDate(device.pairing_expires_at)}</small>`;
+    }
+    if (device.connection === 'not paired') return 'Press New code to connect a screen.';
+    return `${escapeHtml(device.platform || 'Device')}, last seen ${fmtDate(device.last_seen_at)}`;
+}
+
+function deviceActions(device) {
+    if (device.status === 'archived') return '<em>Archived</em>';
+    const button = (action, label) => `<button class="btn-large" data-action="${action}" data-id="${device.id}">${label}</button>`;
+    let extra = '';
+    if (device.kind === 'printer') {
+        extra = button('test', 'Test print');
+    } else {
+        extra = button('pairing-code', 'New code');
+        if (device.connection === 'online' || device.connection === 'offline') extra += button('unpair', 'Disconnect');
+    }
+    return extra + rowActions(device.status, device.id);
+}
+
+function loadDeviceList() {
+    const box = document.getElementById('dev-list');
+    if (!box) return;
+    const archived = document.getElementById('dev-show-archived').checked;
+    api(`/api/v1/admin/devices?include_archived=${archived}`)
+        .then(devices => {
+            deviceRows = devices;
+            if (devices.length === 0) {
+                box.innerHTML = '<p>No devices yet. Add a printer or a monitor above.</p>';
+                return;
+            }
+            box.innerHTML = `
+                <table class="data-table">
+                    <thead><tr><th>Name</th><th>Type</th><th>Prints / shows</th><th>Connection</th><th>Details</th><th>Status</th><th></th></tr></thead>
+                    <tbody>${devices.map(device => `
+                        <tr style="${device.status === 'archived' ? 'opacity: 0.6' : ''}">
+                            <td>${escapeHtml(device.name)}</td>
+                            <td>${device.kind === 'printer' ? 'Printer' : 'Monitor'}</td>
+                            <td>${device.jobs.map(job => escapeHtml(JOB_LABELS[job] || job)).join(', ')}</td>
+                            <td><span class="connection connection-${escapeHtml(device.connection.replace(' ', '-'))}">${escapeHtml(CONNECTION_LABELS[device.connection] || device.connection)}</span></td>
+                            <td>${deviceDetail(device)}</td>
+                            <td>${escapeHtml(statusLabel(device.status))}</td>
+                            <td>${deviceActions(device)}</td>
+                        </tr>`).join('')}</tbody>
+                </table>`;
+        })
+        .catch(error => {
+            box.innerHTML = `<p class="status-note">Could not load devices (${escapeHtml(error.message)}).</p>`;
+        });
+}
+
+function loadReceiptPreview() {
+    const box = document.getElementById('dev-receipt');
+    const token = sessionStorage.getItem('kisnet.token');
+    fetch('/api/v1/admin/receipt-preview', { headers: { Authorization: `Bearer ${token}` } })
+        .then(response => response.ok ? response.text() : Promise.reject(new Error('preview unavailable')))
+        .then(text => { if (box) box.textContent = text; })
+        .catch(error => { if (box) box.textContent = `Could not load the receipt (${error.message}).`; });
+}
+
+function handleDeviceClick(event) {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const id = Number(button.dataset.id);
+    const device = deviceRows.find(item => item.id === id);
+    const action = button.dataset.action;
+    const status = document.getElementById('dev-status');
+    if (action === 'edit') { startDeviceEdit(device); return; }
+    if (action === 'archive' && !window.confirm(`Archive ${device.name}? It will be disconnected for good.`)) return;
+    if (action === 'pairing-code' && device.connection !== 'not paired' && device.connection !== 'waiting'
+        && !window.confirm(`${device.name} is connected. A new code disconnects that screen. Continue?`)) return;
+    const done = { test: 'Test page sent to', 'pairing-code': 'New code ready for', unpair: 'Disconnected', ...ACTION_DONE };
+    status.textContent = action === 'test' ? `Printing a test page on ${device.name}...` : '';
+    api(`/api/v1/admin/devices/${id}/${action}`, { method: 'POST' })
+        .then(() => {
+            if (editingDeviceId === id) resetDeviceForm();
+            status.textContent = `${done[action]} ${device.name}.`;
+            loadDeviceList();
+        })
+        .catch(error => {
+            status.textContent = `${device.name}: ${error.message}`;
+            loadDeviceList();
+        });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Monitor display: any browser becomes a ticket screen once it is connected with a code.
+// The device keeps its own token (not an employee login), so it stays up all day with nobody signed in.
+// ---------------------------------------------------------------------------------------------
+const DEVICE_TOKEN_KEY = 'kisnet.deviceToken';
+
+function deviceToken() {
+    try { return localStorage.getItem(DEVICE_TOKEN_KEY); } catch (error) { return null; }
+}
+
+function setDeviceToken(token) {
+    try {
+        if (token) localStorage.setItem(DEVICE_TOKEN_KEY, token); else localStorage.removeItem(DEVICE_TOKEN_KEY);
+    } catch (error) { /* storage blocked: the screen works until the page is closed */ }
+    window.KIS.deviceToken = token || null;
+}
+
+function deviceApi(path, opts = {}) {
+    const token = window.KIS.deviceToken || deviceToken();
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return fetch('/api/v1' + path, { ...opts, headers }).then(response => {
+        if (!response.ok) {
+            return response.json().catch(() => ({})).then(body => {
+                const error = new Error(body.detail || `HTTP error! status: ${response.status}`);
+                error.status = response.status;
+                throw error;
+            });
+        }
+        return response.json();
+    });
+}
+
+function renderDisplay(root) {
+    if (window.KIS.deviceToken || deviceToken()) {
+        renderDisplayBoard(root);
+    } else {
+        renderDisplayConnect(root);
+    }
+}
+
+function renderDisplayConnect(root, message = '') {
+    root.innerHTML = `
+        <div class="card">
+            <h2>Connect this device</h2>
+            <p>Ask a manager to open <strong>Device Management</strong> and read you the code for this screen.</p>
+            <div class="form-group"><label for="pair-code">Code</label>
+                <input type="text" id="pair-code" class="pairing-input" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false"></div>
+            <button id="pair-btn" class="btn-large">Connect</button>
+            <p id="pair-status" class="status-note">${escapeHtml(message)}</p>
+        </div>`;
+    const input = root.querySelector('#pair-code');
+    const connect = () => {
+        const code = input.value.trim();
+        if (!code) return;
+        deviceApi('/devices/pair', { method: 'POST', body: JSON.stringify({ code }) })
+            .then(result => {
+                setDeviceToken(result.token);
+                renderDisplayBoard(root);
+            })
+            .catch(error => { root.querySelector('#pair-status').textContent = error.message; });
+    };
+    root.querySelector('#pair-btn').addEventListener('click', connect);
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') connect(); });
+    input.focus();
+}
+
+function renderDisplayBoard(root) {
+    root.innerHTML = `
+        <div class="card">
+            <div class="display-header">
+                <h2 id="display-title">Connecting...</h2>
+                <button id="display-disconnect" class="btn-large">Disconnect</button>
+            </div>
+            <p id="display-status" class="status-note"></p>
+            <div class="grid-buttons" id="kitchen-columns"></div>
+        </div>`;
+    root.querySelector('#display-disconnect').addEventListener('click', () => {
+        if (!window.confirm('Disconnect this screen? A manager will need to give it a new code.')) return;
+        deviceApi('/devices/disconnect', { method: 'POST' }).catch(() => {}).then(() => {
+            stopDisplayTimer();
+            setDeviceToken(null);
+            renderDisplayConnect(root);
+        });
+    });
+    root.querySelector('#kitchen-columns').addEventListener('click', event => {
+        const button = event.target.closest('.bump-btn');
+        if (!button) return;
+        button.disabled = true;
+        deviceApi(`/devices/tickets/${button.dataset.orderId}/${button.dataset.track}/bump`, { method: 'POST' })
+            .then(() => loadDisplayBoard(root))
+            .catch(error => { root.querySelector('#display-status').textContent = `Could not bump: ${error.message}`; });
+    });
+    loadDisplayBoard(root);
+    stopDisplayTimer();
+    window.KIS.displayInterval = setInterval(() => loadDisplayBoard(root), 2000);
+}
+
+function stopDisplayTimer() {
+    if (window.KIS && window.KIS.displayInterval) {
+        clearInterval(window.KIS.displayInterval);
+        window.KIS.displayInterval = null;
+    }
+}
+
+function loadDisplayBoard(root) {
+    const columns = root.querySelector('#kitchen-columns');
+    if (!columns) { stopDisplayTimer(); return; }
+    deviceApi('/devices/tickets')
+        .then(board => {
+            root.querySelector('#display-title').textContent = board.device.name;
+            root.querySelector('#display-status').textContent = '';
+            columns.innerHTML = Object.entries(board.tracks).map(([track, tickets]) => `
+                <div class="kitchen-column">
+                    <h3>${escapeHtml(JOB_LABELS[track] || track)}</h3>
+                    <div class="ticket-stack">
+                        ${tickets.length === 0 ? '<p>No active tickets</p>' : tickets.map(ticket => `
+                            <div class="card ticket-card">
+                                <p><strong>Seat:</strong> ${escapeHtml(ticket.seat)}</p>
+                                <p><strong>Party:</strong> ${escapeHtml(ticket.party_name)}</p>
+                                <p><strong>Opened:</strong> ${fmtElapsed(ticket.opened_at)}</p>
+                                <div class="order-items">
+                                    ${ticket.items.map(item => `
+                                        <div class="order-item-card">
+                                            <p><strong>${escapeHtml(item.name)}</strong> - Qty: ${item.qty}
+                                                ${item.notes ? ` | Notes: ${escapeHtml(item.notes)}` : ''}</p>
+                                            <span class="${item.voided ? 'voided-badge' : item.changed ? 'changed-badge' : 'new-badge'}">${item.voided ? 'VOID' : item.changed ? 'CHANGED' : 'NEW'}</span>
+                                        </div>`).join('')}
+                                </div>
+                                <button class="btn-large bump-btn" data-order-id="${ticket.order_id}" data-track="${escapeHtml(track)}">Bump</button>
+                            </div>`).join('')}
+                    </div>
+                </div>`).join('');
+        })
+        .catch(error => {
+            if (error.status === 401) {
+                // A manager disconnected, deactivated or re-coded this screen
+                stopDisplayTimer();
+                setDeviceToken(null);
+                renderDisplayConnect(root, 'This screen was disconnected. Enter a new code to reconnect.');
+            } else {
+                const status = root.querySelector('#display-status');
+                if (status) status.textContent = `Lost contact with the server (${error.message}). Retrying...`;
+            }
+        });
+}
+
 // Daily Summary (admin): totals for one business day, items by popularity, and the End of Day export
 function renderSummary(root) {
     root.innerHTML = `
@@ -1911,6 +2304,8 @@ const SCREENS = {
     '/summary': renderSummary,
     '/employees': renderEmployees,
     '/recipes': renderRecipes,
+    '/devices': renderDevices,
+    '/display': renderDisplay,
     '/home': renderHome
 };
 
@@ -2113,14 +2508,15 @@ function renderNavBar() {
 
 // Update screen based on hash
 // Screens a logged-out visitor may open
-const PUBLIC_PATHS = ['/home', '/login', '/timecard'];
+const PUBLIC_PATHS = ['/home', '/login', '/timecard', '/display'];
 
 // Menu labels for every screen the menu can open
 const MENU_LABELS = {
     '/home': 'Home', '/login': 'Login',
     '/command': 'Command Center', '/reports': 'Reports', '/host': 'Host', '/server': 'Server',
     '/bar': 'Drink Queue', '/barseats': 'Bar Seats', '/kitchen': 'Kitchen', '/timecard': 'Time Card',
-    '/summary': 'Daily Summary', '/employees': 'Employees', '/recipes': 'Recipes'
+    '/summary': 'Daily Summary', '/employees': 'Employees', '/recipes': 'Recipes',
+    '/devices': 'Device Management', '/display': 'Connect a Screen'
 };
 
 // The three-bar menu sits outside the screens, so it is available on every page
@@ -2149,10 +2545,10 @@ function renderMenu() {
     if (!menu) return;
     let paths;
     if (!state.employee) {
-        paths = ['/home', '/login', '/timecard'];
+        paths = ['/home', '/login', '/timecard', '/display'];
     } else if (state.employee.role === 'admin') {
         paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard',
-                 '/employees', '/recipes'];
+                 '/employees', '/recipes', '/devices'];
     } else {
         paths = state.employee.role === 'bartender'
             ? ['/barseats', '/bar', '/timecard']
@@ -2160,7 +2556,7 @@ function renderMenu() {
     }
     menu.innerHTML = '<h3 class="side-menu-title">Menu</h3>';
     paths.forEach((path, index) => {
-        // Admin's System section (Employees and Recipes) sits under its own heading
+        // Admin's System section (Employees, Recipes and Device Management) sits under its own heading
         if (path === '/employees') {
             menu.insertAdjacentHTML('beforeend', '<h3 class="side-menu-title side-menu-section">System</h3>');
         }
@@ -2267,6 +2663,11 @@ window.KIS = {
 function stopScreenTimers() {
     clearKitchenInterval();
     stopTicketPanel();
+    stopDisplayTimer();
+    if (window.KIS && window.KIS.devicesInterval) {
+        clearInterval(window.KIS.devicesInterval);
+        window.KIS.devicesInterval = null;
+    }
     if (window.KIS && window.KIS.queueInterval) {
         clearInterval(window.KIS.queueInterval);
         window.KIS.queueInterval = null;
