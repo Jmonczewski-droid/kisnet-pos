@@ -1,4 +1,4 @@
-"""Look-in portal endpoints. View-only, apart from signing in and out and clocking an employee out."""
+"""Look-in portal endpoints. Everything here is read-only apart from signing in and out."""
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
@@ -39,15 +39,6 @@ def lookin_login(data: ClockInIn, db: Session = Depends(get_db)):
 def lookin_snapshot(_: Employee = Depends(current_viewer), db: Session = Depends(get_db)):
     """Today's sales, labor, open tickets and tables, and who is on the clock, as of right now."""
     return service.snapshot(db)
-
-
-@router.post("/lookin/clock-out/{employee_id}")
-def lookin_clock_out(employee_id: int, _: Employee = Depends(current_viewer), db: Session = Depends(get_db)):
-    """Manage labor remotely: clock one employee out. The only thing the portal can change."""
-    try:
-        return service.clock_out(db, employee_id)
-    except AuthError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @router.post("/lookin/logout")

@@ -100,7 +100,7 @@ def test_look_in_shows_live_numbers_and_no_personal_details(client, portal, logi
     assert (after["open_tables"], after["active_tickets"]) == (1, 1)
     assert {p["name"] for p in after["on_clock"]} == {"Linda Park", "Emma Carter", "Michael Brooks"}
     # who is working and since when; no codes, addresses, birth dates or SSN
-    assert set(after["on_clock"][0]) == {"employee_id", "name", "position", "clocked_in_at", "open_tables"}
+    assert set(after["on_clock"][0]) == {"name", "position", "clocked_in_at", "open_tables"}
     assert next(p for p in after["on_clock"] if p["name"] == "Michael Brooks")["open_tables"] == 1
     assert [row["sales_cents"] for row in after["hours"] if row["sales_cents"]] == [3 * item["price_cents"]]
     assert sum(row["labor_cents"] for row in after["hours"]) == after["labor_cents"]
@@ -108,23 +108,19 @@ def test_look_in_shows_live_numbers_and_no_personal_details(client, portal, logi
     assert "ssn" not in text.lower() and "address" not in text.lower() and "pin" not in text.lower()
 
 
-def test_labor_can_be_managed_remotely_by_clocking_someone_out(client, portal, login, clock):
+def test_nothing_can_be_changed_from_the_portal(client, portal, login, clock):
     owner, server = login("ADM1"), login("SRV1")
     secret = _two_step(client, owner, clock)
     viewer = _look_in(portal, clock, secret)
-    on_clock = portal.get(f"{API}/lookin", headers=viewer).json()["on_clock"]
-    target = next(p for p in on_clock if p["name"] == "Michael Brooks")
-
-    assert portal.post(f"{API}/lookin/clock-out/{target['employee_id']}").status_code == 401          # needs the sign-in
-    assert portal.post(f"{API}/lookin/clock-out/{target['employee_id']}", headers=server).status_code == 401
-    done = portal.post(f"{API}/lookin/clock-out/{target['employee_id']}", headers=viewer)
-    assert done.json() == {"clocked_out": True, "name": "Michael Brooks"}
-
-    names = {p["name"] for p in portal.get(f"{API}/lookin", headers=viewer).json()["on_clock"]}
-    assert "Michael Brooks" not in names
-    assert client.get(f"{API}/auth/me", headers=server).status_code == 401      # their station session ended
-    assert portal.post(f"{API}/lookin/clock-out/{target['employee_id']}", headers=viewer).status_code == 404
-    assert portal.post(f"{API}/lookin/clock-out/99999", headers=viewer).status_code == 404
+    target = client.get(f"{API}/auth/me", headers=server).json()["id"]
+    # No remote clock-out: the route does not exist on the portal or on the POS
+    assert portal.post(f"{API}/lookin/clock-out/{target}", headers=viewer).status_code == 404
+    assert client.post(f"{API}/lookin/clock-out/{target}", headers=viewer).status_code == 404
+    assert client.get(f"{API}/auth/me", headers=server).status_code == 200
+    # The only things the portal accepts besides reading the feed are signing in and out
+    writes = sorted(route.path for route in lookin_app.routes
+                    if getattr(route, "methods", None) and route.methods - {"GET", "HEAD"})
+    assert writes == [f"{API}/lookin/login", f"{API}/lookin/logout"]
 
 
 def test_look_in_token_is_read_only_and_good_for_nothing_else(client, portal, login, clock):

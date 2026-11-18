@@ -126,8 +126,7 @@ code it prints, turn on two-step sign-in, create a card for each employee, then 
 
 The look-in portal lets the owner and managers see today's business from outside the restaurant, live:
 sales, sales per hour, open tables and tickets, who is working and when they clocked in, labor per hour and
-labor for the day. Sales and food are view-only (food is managed at the shop). Labor can be managed
-remotely in one way: clocking an employee out.
+labor for the day. It is read-only: nothing can be changed from the portal, including clock-outs.
 
 It runs as a **separate server with its own link**, so the rest of the POS is never exposed:
 
@@ -185,8 +184,7 @@ Base path `/api/v1`. Interactive docs at `/docs`.
   `GET /admin/server-address`
 - `devices` (a paired monitor, using its own token): `POST /devices/pair`, `GET /devices/me`, `GET /devices/tickets`,
   `POST /devices/tickets/{order_id}/{track}/bump`, `POST /devices/disconnect`
-- `lookin` (owner/manager, own token): `POST /lookin/login`, `GET /lookin`, `POST /lookin/clock-out/{employee_id}`,
-  `POST /lookin/logout`
+- `lookin` (owner/manager, own token, read-only): `POST /lookin/login`, `GET /lookin`, `POST /lookin/logout`
 - `reports` (admin): `GET /reports/daily-sales`, `GET /reports/food-usage` (both take `start` and `end` as YYYY-MM-DD)
 
 ## Layout

@@ -1795,7 +1795,7 @@ function renderLookinSignIn(root, message = '') {
     root.innerHTML = `
         <div class="card">
             <h2>Look-in</h2>
-            <p>See today's business in real time. For the owner and managers. Sales are view-only; you can clock people out to manage labor.</p>
+            <p>See today's business in real time. For the owner and managers. Nothing can be changed from here.</p>
             <div class="form-group"><label for="lookin-code">Employee code</label>
                 <input type="text" id="lookin-code" autocomplete="username" autocapitalize="characters" spellcheck="false"></div>
             <div class="form-group"><label for="lookin-pin">PIN</label>
@@ -1855,23 +1855,6 @@ function renderLookinBoard(root) {
             renderLookinSignIn(root);
         });
     });
-    // Labor management: clock one person out
-    root.querySelector('#lookin-body').addEventListener('click', event => {
-        const button = event.target.closest('.lookin-clock-out');
-        if (!button) return;
-        const name = button.dataset.name;
-        const tables = Number(button.dataset.tables);
-        const warning = tables > 0 ? ` They still have ${tables} open table${tables === 1 ? '' : 's'}.` : '';
-        if (!window.confirm(`Clock out ${name} now?${warning}`)) return;
-        button.disabled = true;
-        lookinApi(`/lookin/clock-out/${button.dataset.id}`, { method: 'POST' })
-            .then(() => loadLookin(root))
-            .catch(error => {
-                const updated = root.querySelector('#lookin-updated');
-                updated.textContent = `Could not clock out ${name}: ${error.message}`;
-                updated.classList.add('status-note');
-            });
-    });
     loadLookin(root);
     stopLookinTimer();
     window.KIS.lookinInterval = setInterval(() => loadLookin(root), LOOKIN_REFRESH_MS);
@@ -1898,12 +1881,12 @@ function loadLookin(root) {
                 <h3>On the clock</h3>
                 ${data.on_clock.length === 0 ? '<p>Nobody is clocked in.</p>' : `
                 <table class="data-table">
-                    <thead><tr><th>Name</th><th>Working as</th><th>Clocked in</th><th>Open tables</th><th></th></tr></thead>
+                    <thead><tr><th>Name</th><th>Working as</th><th>Clocked in</th><th>On for</th><th>Open tables</th></tr></thead>
                     <tbody>${data.on_clock.map(person => `
                         <tr><td>${escapeHtml(person.name)}</td><td>${escapeHtml(roleLabel(person.position))}</td>
                             <td>${parseServerTime(person.clocked_in_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</td>
-                            <td>${person.open_tables || ''}</td>
-                            <td><button class="btn-large lookin-clock-out" data-id="${person.employee_id}" data-name="${escapeHtml(person.name)}" data-tables="${person.open_tables}">Clock out</button></td></tr>`).join('')}</tbody>
+                            <td>${fmtElapsed(person.clocked_in_at)}</td>
+                            <td>${person.open_tables || ''}</td></tr>`).join('')}</tbody>
                 </table>`}
                 <h3>By the hour</h3>
                 ${data.hours.length === 0 ? '<p>No sales or labor yet today.</p>' : `

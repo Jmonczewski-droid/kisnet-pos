@@ -1,8 +1,8 @@
-"""The look-in portal: a real-time view of today's business for the owner and managers.
+"""The look-in portal: a read-only, real-time view of today's business for the owner and managers.
 
 It is the one part of the POS meant to be reached from outside the restaurant, so it is kept apart:
-its own sign-in (no clock-in needed) and its own short-lived token. Sales and food are view-only
-(food is managed at the shop). Labor can be managed from here in exactly one way: clocking someone out.
+its own sign-in (no clock-in needed), its own short-lived token, and a feed that can only be read.
+Nothing can be changed from the portal: no orders, no menu, no clock-outs.
 """
 from datetime import timedelta
 from typing import Optional, Tuple
@@ -75,8 +75,7 @@ def snapshot(session: Session) -> dict:
         employee = session.get(Employee, entry.employee_id)
         if employee:
             tables = session.query(Party).filter(Party.server_id == employee.id, Party.closed_at.is_(None)).count()
-            on_clock.append({"employee_id": employee.id, "name": employee.name,
-                             "position": entry.position or employee.role,
+            on_clock.append({"name": employee.name, "position": entry.position or employee.role,
                              "clocked_in_at": entry.clocked_in_at, "open_tables": tables})
     open_tables = session.query(Party).filter(Party.closed_at.is_(None)).count()
     return {
@@ -90,16 +89,3 @@ def snapshot(session: Session) -> dict:
         "on_clock": on_clock,
         "hours": stats["hours"],
     }
-
-
-def clock_out(session: Session, employee_id: int) -> dict:
-    """Labor management from the portal: end one employee's shift now. Their station session ends with it."""
-    entry = (session.query(TimeEntry)
-             .filter(TimeEntry.employee_id == employee_id, TimeEntry.clocked_out_at.is_(None)).first())
-    employee = session.get(Employee, employee_id)
-    if not entry or not employee:
-        raise AuthError(status.HTTP_404_NOT_FOUND, "That employee is not on the clock")
-    entry.clocked_out_at = utcnow()
-    entry.token_hash = None
-    session.commit()
-    return {"clocked_out": True, "name": employee.name}

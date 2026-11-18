@@ -4,10 +4,9 @@ Run this as a second, separate server and point the outside world (a tunnel or r
 
     venv/bin/python -m uvicorn app.lookin_app:app --port 8001
 
-It serves the look-in page and its feed and nothing else: today's sales and labor to look at, and
-clocking an employee out as the one thing it can change. Ordering, employees, recipes, devices and
-reports do not exist on this server, so they cannot be reached from outside whatever address
-someone types.
+It serves the look-in page and its read-only feed and nothing else. Ordering, employees, recipes,
+devices, reports and clock-outs do not exist on this server, so they cannot be reached from outside
+whatever address someone types.
 """
 from pathlib import Path
 
