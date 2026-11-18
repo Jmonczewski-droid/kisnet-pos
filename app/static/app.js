@@ -59,7 +59,7 @@ function stationFor(role) {
 }
 
 // Database management screens: the owner only
-const OWNER_PATHS = ['/employees', '/recipes', '/devices', '/security'];
+const OWNER_PATHS = ['/employees', '/recipes', '/devices'];
 
 function isOwner() {
     return !!state.employee && state.employee.access === 'owner';
@@ -1642,9 +1642,10 @@ function promptAuthenticatorCode(message, then) {
 function renderSecurity(root) {
     root.innerHTML = `
         <div class="card">
-            <h2>Owner Security</h2>
-            <p>The owner is the only person who can open the employee database, recipes and devices.
-               Two-step sign-in protects that: signing in takes your PIN <strong>and</strong> a code from an app on your phone.</p>
+            <h2>Sign-in Security</h2>
+            <p>With two-step sign-in, signing in takes your PIN <strong>and</strong> a code from an app on your phone.
+               It protects the owner's access to the employee database, and it is required to use the
+               <strong>Look-in</strong> portal from outside the restaurant.</p>
             <div id="sec-body"><p>Loading...</p></div>
             <p id="sec-status" class="status-note"></p>
             <h3>Your PIN</h3>
@@ -1745,6 +1746,184 @@ function startTwoStepSetup() {
             box.querySelector('#sec-on-code').focus();
         })
         .catch(error => { status.textContent = error.message; });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Look-in portal: a read-only, real-time view of today's business for the owner and managers.
+// It has its own sign-in (no clock-in needed) and is the one screen meant to be opened from outside.
+// ---------------------------------------------------------------------------------------------
+const LOOKIN_TOKEN_KEY = 'kisnet.lookinToken';
+const LOOKIN_REFRESH_MS = 5000;
+let portalMode = 'full';  // 'lookin' when this server is the look-in portal only
+
+function lookinToken() {
+    try { return sessionStorage.getItem(LOOKIN_TOKEN_KEY); } catch (error) { return null; }
+}
+
+function setLookinToken(token) {
+    try {
+        if (token) sessionStorage.setItem(LOOKIN_TOKEN_KEY, token); else sessionStorage.removeItem(LOOKIN_TOKEN_KEY);
+    } catch (error) { /* storage blocked: the page works until it is closed */ }
+}
+
+function lookinApi(path, opts = {}) {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = lookinToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return fetch('/api/v1' + path, { ...opts, headers }).then(response => {
+        if (!response.ok) {
+            return response.json().catch(() => ({})).then(body => {
+                const error = new Error(typeof body.detail === 'string' ? body.detail : `HTTP error! status: ${response.status}`);
+                error.status = response.status;
+                error.code = response.headers.get('X-Error-Code');
+                throw error;
+            });
+        }
+        return response.json();
+    });
+}
+
+function renderLookin(root) {
+    if (lookinToken()) {
+        renderLookinBoard(root);
+    } else {
+        renderLookinSignIn(root);
+    }
+}
+
+function renderLookinSignIn(root, message = '') {
+    root.innerHTML = `
+        <div class="card">
+            <h2>Look-in</h2>
+            <p>See today's business in real time. For the owner and managers. Sales are view-only; you can clock people out to manage labor.</p>
+            <div class="form-group"><label for="lookin-code">Employee code</label>
+                <input type="text" id="lookin-code" autocomplete="username" autocapitalize="characters" spellcheck="false"></div>
+            <div class="form-group"><label for="lookin-pin">PIN</label>
+                <input type="password" id="lookin-pin" autocomplete="current-password"></div>
+            <div class="form-group"><label for="lookin-otp">Authenticator code</label>
+                <input type="text" id="lookin-otp" class="pairing-input" maxlength="7" inputmode="numeric" autocomplete="one-time-code"></div>
+            <button id="lookin-go" class="btn-large">Sign in</button>
+            <p id="lookin-status" class="status-note">${escapeHtml(message)}</p>
+        </div>`;
+    const status = root.querySelector('#lookin-status');
+    const submit = () => {
+        const code = root.querySelector('#lookin-code').value.trim().toUpperCase();
+        const pin = root.querySelector('#lookin-pin').value;
+        const otp = root.querySelector('#lookin-otp').value.replace(/\D/g, '');
+        if (!code || !pin) { status.textContent = 'Enter your employee code and PIN.'; return; }
+        const body = { code, pin };
+        if (otp) body.otp = otp;
+        lookinApi('/lookin/login', { method: 'POST', body: JSON.stringify(body) })
+            .then(result => {
+                setLookinToken(result.token);
+                renderLookinBoard(root);
+            })
+            .catch(error => {
+                status.textContent = error.code === 'pin_change_required'
+                    ? 'Choose your own PIN at the restaurant first, then sign in here.'
+                    : error.message;
+                root.querySelector('#lookin-otp').value = '';
+            });
+    };
+    root.querySelector('#lookin-go').addEventListener('click', submit);
+    root.querySelectorAll('input').forEach(input =>
+        input.addEventListener('keydown', event => { if (event.key === 'Enter') submit(); }));
+    root.querySelector('#lookin-code').focus();
+}
+
+function stopLookinTimer() {
+    if (window.KIS && window.KIS.lookinInterval) {
+        clearInterval(window.KIS.lookinInterval);
+        window.KIS.lookinInterval = null;
+    }
+}
+
+function renderLookinBoard(root) {
+    root.innerHTML = `
+        <div class="card">
+            <div class="display-header">
+                <h2>Today's business</h2>
+                <button id="lookin-out" class="btn-large">Sign out</button>
+            </div>
+            <p id="lookin-updated" class="lookin-updated">Loading...</p>
+            <div id="lookin-body"></div>
+        </div>`;
+    root.querySelector('#lookin-out').addEventListener('click', () => {
+        stopLookinTimer();
+        lookinApi('/lookin/logout', { method: 'POST' }).catch(() => {}).then(() => {
+            setLookinToken(null);
+            renderLookinSignIn(root);
+        });
+    });
+    // Labor management: clock one person out
+    root.querySelector('#lookin-body').addEventListener('click', event => {
+        const button = event.target.closest('.lookin-clock-out');
+        if (!button) return;
+        const name = button.dataset.name;
+        const tables = Number(button.dataset.tables);
+        const warning = tables > 0 ? ` They still have ${tables} open table${tables === 1 ? '' : 's'}.` : '';
+        if (!window.confirm(`Clock out ${name} now?${warning}`)) return;
+        button.disabled = true;
+        lookinApi(`/lookin/clock-out/${button.dataset.id}`, { method: 'POST' })
+            .then(() => loadLookin(root))
+            .catch(error => {
+                const updated = root.querySelector('#lookin-updated');
+                updated.textContent = `Could not clock out ${name}: ${error.message}`;
+                updated.classList.add('status-note');
+            });
+    });
+    loadLookin(root);
+    stopLookinTimer();
+    window.KIS.lookinInterval = setInterval(() => loadLookin(root), LOOKIN_REFRESH_MS);
+}
+
+function loadLookin(root) {
+    const box = root.querySelector('#lookin-body');
+    if (!box) { stopLookinTimer(); return; }
+    const updated = root.querySelector('#lookin-updated');
+    lookinApi('/lookin')
+        .then(data => {
+            const money = cents => `$${(cents / 100).toFixed(2)}`;
+            updated.textContent = `Live. Updated ${parseServerTime(data.as_of).toLocaleTimeString()}`;
+            updated.classList.remove('status-note');
+            box.innerHTML = `
+                <div class="stat-row">
+                    <div class="stat-card"><span>Sales today</span><strong>${money(data.sales_cents)}</strong></div>
+                    <div class="stat-card"><span>Labor today</span><strong>${money(data.labor_cents)}</strong></div>
+                    <div class="stat-card"><span>Labor %</span><strong>${data.labor_pct === null ? '-' : data.labor_pct + '%'}</strong></div>
+                    <div class="stat-card"><span>Open tickets</span><strong>${data.active_tickets}</strong></div>
+                    <div class="stat-card"><span>Open tables</span><strong>${data.open_tables}</strong></div>
+                    <div class="stat-card"><span>On the clock</span><strong>${data.on_clock.length}</strong></div>
+                </div>
+                <h3>On the clock</h3>
+                ${data.on_clock.length === 0 ? '<p>Nobody is clocked in.</p>' : `
+                <table class="data-table">
+                    <thead><tr><th>Name</th><th>Working as</th><th>Clocked in</th><th>Open tables</th><th></th></tr></thead>
+                    <tbody>${data.on_clock.map(person => `
+                        <tr><td>${escapeHtml(person.name)}</td><td>${escapeHtml(roleLabel(person.position))}</td>
+                            <td>${parseServerTime(person.clocked_in_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</td>
+                            <td>${person.open_tables || ''}</td>
+                            <td><button class="btn-large lookin-clock-out" data-id="${person.employee_id}" data-name="${escapeHtml(person.name)}" data-tables="${person.open_tables}">Clock out</button></td></tr>`).join('')}</tbody>
+                </table>`}
+                <h3>By the hour</h3>
+                ${data.hours.length === 0 ? '<p>No sales or labor yet today.</p>' : `
+                <table class="data-table">
+                    <thead><tr><th>Hour</th><th>Sales</th><th>Labor</th><th>Labor %</th></tr></thead>
+                    <tbody>${data.hours.map(row => `
+                        <tr><td>${escapeHtml(row.hour)}</td><td>${money(row.sales_cents)}</td><td>${money(row.labor_cents)}</td>
+                            <td>${row.labor_pct === null ? '-' : row.labor_pct + '%'}</td></tr>`).join('')}</tbody>
+                </table>`}`;
+        })
+        .catch(error => {
+            if (error.status === 401) {
+                stopLookinTimer();
+                setLookinToken(null);
+                renderLookinSignIn(root, 'Your look-in sign-in has ended. Sign in again.');
+            } else {
+                updated.textContent = `Lost contact (${error.message}). Showing the last figures; retrying...`;
+                updated.classList.add('status-note');
+            }
+        });
 }
 
 // Daily Summary (admin): totals for one business day, items by popularity, and the End of Day export
@@ -2526,6 +2705,7 @@ const SCREENS = {
     '/recipes': renderRecipes,
     '/devices': renderDevices,
     '/security': renderSecurity,
+    '/lookin': renderLookin,
     '/display': renderDisplay,
     '/home': renderHome
 };
@@ -2729,7 +2909,7 @@ function renderNavBar() {
 
 // Update screen based on hash
 // Screens a logged-out visitor may open
-const PUBLIC_PATHS = ['/home', '/login', '/timecard', '/display'];
+const PUBLIC_PATHS = ['/home', '/login', '/timecard', '/display', '/lookin'];
 
 // Menu labels for every screen the menu can open
 const MENU_LABELS = {
@@ -2737,7 +2917,7 @@ const MENU_LABELS = {
     '/command': 'Command Center', '/reports': 'Reports', '/host': 'Host', '/server': 'Server',
     '/bar': 'Drink Queue', '/barseats': 'Bar Seats', '/kitchen': 'Kitchen', '/timecard': 'Time Card',
     '/summary': 'Daily Summary', '/employees': 'Employees', '/recipes': 'Recipes',
-    '/devices': 'Device Management', '/display': 'Connect a Screen', '/security': 'Owner Security'
+    '/devices': 'Device Management', '/display': 'Connect a Screen', '/security': 'Sign-in Security', '/lookin': 'Look-in'
 };
 
 // The three-bar menu sits outside the screens, so it is available on every page
@@ -2766,9 +2946,9 @@ function renderMenu() {
     if (!menu) return;
     let paths;
     if (!state.employee) {
-        paths = ['/home', '/login', '/timecard', '/display'];
+        paths = portalMode === 'lookin' ? ['/lookin'] : ['/home', '/login', '/timecard', '/display', '/lookin'];
     } else if (state.employee.role === 'admin') {
-        paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard'];
+        paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard', '/security'];
         if (isOwner()) paths = paths.concat(OWNER_PATHS);  // a manager runs the floor; the System section is the owner's
     } else {
         paths = state.employee.role === 'bartender'
@@ -2778,7 +2958,7 @@ function renderMenu() {
     menu.innerHTML = '<h3 class="side-menu-title">Menu</h3>';
     paths.forEach((path, index) => {
         // The owner's System section (Employees, Recipes, Device Management, Owner Security) sits under its own heading
-        if (path === '/employees') {
+        if (path === OWNER_PATHS[0]) {
             menu.insertAdjacentHTML('beforeend', '<h3 class="side-menu-title side-menu-section">System</h3>');
         }
         const link = document.createElement('a');
@@ -2797,6 +2977,10 @@ function renderMenu() {
 function updateScreen() {
     const root = document.getElementById('app');
     if (!root) return;
+    if (portalMode === 'lookin' && window.location.hash !== '#/lookin') {
+        go('/lookin');
+        return;
+    }
 
     closeModal();
     stopScreenTimers();
@@ -2870,8 +3054,11 @@ function init() {
         }
     }, 15000);
     
-    // Initial screen load
-    updateScreen();
+    // Initial screen load. First ask the server whether it is the full POS or the look-in portal only.
+    fetch('/api/v1/portal').then(response => response.json()).catch(() => ({ mode: 'full' })).then(info => {
+        portalMode = info.mode === 'lookin' ? 'lookin' : 'full';
+        updateScreen();
+    });
 }
 
 // Expose to global scope for later tasks
@@ -2890,6 +3077,7 @@ function stopScreenTimers() {
     clearKitchenInterval();
     stopTicketPanel();
     stopDisplayTimer();
+    stopLookinTimer();
     if (window.KIS && window.KIS.devicesInterval) {
         clearInterval(window.KIS.devicesInterval);
         window.KIS.devicesInterval = null;

@@ -187,10 +187,10 @@ def test_a_correct_pin_clears_the_count(client, login):
 
 # --- Owner two-step sign-in -----------------------------------------------------------------
 
-def test_two_step_setup_is_owner_only(client, login):
+def test_two_step_setup_is_for_owner_and_managers(client, login):
     owner = login("ADM1")
     card, manager = _hire(client, owner, "Maya Manager", access="manager")
-    assert client.post(f"{API}/auth/totp/setup", headers=manager).status_code == 403
+    assert client.post(f"{API}/auth/totp/setup", headers=manager).status_code == 200  # needed for the look-in portal
     assert client.post(f"{API}/auth/totp/setup", headers=login("SRV1")).status_code == 403
 
 
@@ -266,6 +266,9 @@ def test_two_step_roster_flag_and_demotion_clears_it(client, login, clock, db):
     row = lambda: next(r for r in client.get(f"{API}/admin/roster", headers=owner).json() if r["id"] == second["id"])
     assert row()["two_step"] is True
     client.patch(f"{API}/admin/employees/{second['id']}", headers=owner, json={"access": "manager"})
+    assert row()["two_step"] is True   # managers keep it
+    client.patch(f"{API}/admin/employees/{second['id']}", headers=owner,
+                 json={"access": "team", "positions": ["server"]})
     assert row()["two_step"] is False
     db.expire_all()
     assert db.get(Employee, second["id"]).totp_secret is None

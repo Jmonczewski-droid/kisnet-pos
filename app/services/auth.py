@@ -129,9 +129,12 @@ def totp_status(employee: Employee) -> dict:
 
 
 def totp_setup(session: Session, employee: Employee) -> dict:
-    """Start two-step sign-in: a fresh key to load into an authenticator app. Not active until confirmed."""
-    if employee.access != "owner":
-        raise AuthError(status.HTTP_403_FORBIDDEN, "Two-step sign-in is for the owner")
+    """Start two-step sign-in: a fresh key to load into an authenticator app. Not active until confirmed.
+
+    For the owner and managers. It is required for the look-in portal.
+    """
+    if employee.access not in ("owner", "manager"):
+        raise AuthError(status.HTTP_403_FORBIDDEN, "Two-step sign-in is for the owner and managers")
     if employee.totp_enabled:
         raise AuthError(status.HTTP_409_CONFLICT, "Two-step sign-in is already on. Turn it off first to set up a new device.")
     employee.totp_secret = totp.new_secret()

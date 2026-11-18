@@ -206,8 +206,11 @@ def update_employee(session: Session, employee_id: int, data, actor_id: Optional
         access, ordered_positions = resolve_access(positions, access)
         if access != "owner":
             _keep_an_owner(session, employee)
+        if access == "team":
             from app.services.auth import clear_totp
-            clear_totp(employee)  # two-step sign-in belongs to the owner
+            from app.services.lookin import end_sessions_for
+            clear_totp(employee)  # two-step sign-in and the look-in portal are for the owner and managers
+            end_sessions_for(session, employee.id)
         employee.access = access
         employee.role = ordered_positions[0]
         employee.positions = ",".join(ordered_positions)
@@ -228,6 +231,8 @@ def update_employee(session: Session, employee_id: int, data, actor_id: Optional
             employee.must_change_pin = actor_id != employee.id
             employee.failed_attempts = 0
             employee.locked_until = None
+            from app.services.lookin import end_sessions_for
+            end_sessions_for(session, employee.id)  # a PIN reset signs them out of the look-in portal
         else:
             setattr(employee, key, value)
     

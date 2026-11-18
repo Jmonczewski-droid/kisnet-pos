@@ -25,6 +25,7 @@ Every employee clocks in with their own code and PIN and lands on the screen for
 - **Accurate money:** all prices and totals are stored in whole cents, so there are no rounding errors in sales reports.
 - **Price snapshots:** each item's name, price, and recipe are saved at the moment of sale, so changing the menu never rewrites past sales.
 - **Secure logins:** employee PINs are hashed (PBKDF2), never stored as plain text. Employees set their own PIN, repeated wrong guesses lock the sign-in, and the owner can add two-step sign-in with an authenticator app.
+- **Remote look-in:** a separate, locked-down portal shows today's sales and labor in real time from anywhere, behind two-step sign-in.
 - **Three access levels:** Owner, Manager and Team Member, so only the owner can open the employee database.
 - **Food-usage reporting:** recipes are stored with ingredient quantities, so sales turn directly into a food-usage report, the same way a manager tracks food cost.
 - **Labor tracking:** clock-in/out, weekly hours per employee, and an admin view of everyone's hours.
@@ -38,7 +39,7 @@ Every employee clocks in with their own code and PIN and lands on the screen for
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic migrations, Pydantic
 - **Database:** SQLite by default; PostgreSQL can be configured through a SQLAlchemy URL (not yet tested)
 - **Front end:** plain HTML, CSS, and JavaScript, with no build step
-- **Testing:** 141 automated tests with pytest, including an end-to-end acceptance test of the full workflow through the HTTP API
+- **Testing:** 155 automated tests with pytest, including an end-to-end acceptance test of the full workflow through the HTTP API
 
 ## How it was built
 
@@ -112,7 +113,7 @@ Every employee card has an access level, separate from the stations they work:
   nobody, including the owner, can read them.
 - **Lockout.** Five wrong PINs (or authenticator codes) in a row lock that sign-in for five minutes. The owner
   can unlock it sooner by issuing a new starter PIN.
-- **Owner two-step sign-in.** Under System > Owner Security the owner can require a 6-digit code from an
+- **Two-step sign-in.** Under Menu > Sign-in Security the owner and managers can require a 6-digit code from an
   authenticator app as well as the PIN. It uses the open TOTP standard, so any app works, including the
   open-source Aegis, 2FAS and Ente Auth. If the phone is lost, run
   `venv/bin/python -m app.cli reset-two-step <CODE>` on the server.
@@ -120,6 +121,30 @@ Every employee card has an access level, separate from the stations they work:
 
 To go live with a real business: run `venv/bin/python -m app.cli create-owner "Your Name"`, sign in with the
 code it prints, turn on two-step sign-in, create a card for each employee, then archive the demo roster.
+
+## Look-in portal (remote, real time)
+
+The look-in portal lets the owner and managers see today's business from outside the restaurant, live:
+sales, sales per hour, open tables and tickets, who is working and when they clocked in, labor per hour and
+labor for the day. Sales and food are view-only (food is managed at the shop). Labor can be managed
+remotely in one way: clocking an employee out.
+
+It runs as a **separate server with its own link**, so the rest of the POS is never exposed:
+
+```bash
+venv/bin/python -m uvicorn app.lookin_app:app --port 8001
+```
+
+- That server has the look-in page and nothing else. Ordering, employees, recipes, devices and reports do not
+  exist on it, so they cannot be reached from outside.
+- Sign-in is employee code + PIN + authenticator code. Two-step sign-in is required (turn it on at the
+  restaurant under Menu > Sign-in Security), no clock-in is needed, and a sign-in lasts 12 hours.
+- A look-in sign-in cannot be used on the POS, and a POS sign-in cannot be used on the portal.
+- Point a VPN or an HTTPS tunnel (Tailscale, WireGuard, Cloudflare Tunnel) at port 8001 only. Do not expose it
+  over plain HTTP, and never point the outside world at the main POS port.
+- Settings (`.env`): `LOOKIN_HOURS` (default 12), `LOOKIN_REQUIRE_TWO_STEP` (default true).
+
+The same page is also on the main POS at `#/lookin` for use inside the restaurant.
 
 ## Device management
 
@@ -160,6 +185,8 @@ Base path `/api/v1`. Interactive docs at `/docs`.
   `GET /admin/server-address`
 - `devices` (a paired monitor, using its own token): `POST /devices/pair`, `GET /devices/me`, `GET /devices/tickets`,
   `POST /devices/tickets/{order_id}/{track}/bump`, `POST /devices/disconnect`
+- `lookin` (owner/manager, own token): `POST /lookin/login`, `GET /lookin`, `POST /lookin/clock-out/{employee_id}`,
+  `POST /lookin/logout`
 - `reports` (admin): `GET /reports/daily-sales`, `GET /reports/food-usage` (both take `start` and `end` as YYYY-MM-DD)
 
 ## Layout
@@ -175,7 +202,7 @@ app/
   seed/menu.csv   seed menu with generic recipes (placeholders to review)
   static/     front end (index.html, app.js, styles.css)
   templates/receipt.txt   guest receipt layout (edit this)
-alembic/      migrations (0001_initial through 0005_access_levels)
+alembic/      migrations (0001_initial through 0006_lookin_sessions)
 tests/
 ```
 

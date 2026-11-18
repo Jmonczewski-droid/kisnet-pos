@@ -566,3 +566,9 @@ td { border-color: var(--parchment-dark) !important; }
 .setup-steps { padding-left: 20px; }
 .setup-steps li { margin-bottom: 14px; }
 .form-group small { display: block; margin-top: 4px; }
+
+/* Look-in portal */
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 12px 0; }
+.lookin-updated { font-size: 14px; margin: 4px 0 0; }
+.lookin-clock-out { padding: 6px 10px; white-space: nowrap; min-width: 0; width: auto; font-size: 15px; }
+@media (max-width: 768px) { .display-header h2 { margin-left: 48px; } }

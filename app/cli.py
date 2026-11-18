@@ -91,7 +91,7 @@ def reset_two_step(code: str):
         employee.failed_attempts = 0
         employee.locked_until = None
         session.commit()
-        print(f"Two-step sign-in is off for {employee.code} {employee.name}. Set it up again under Owner Security.")
+        print(f"Two-step sign-in is off for {employee.code} {employee.name}. Set it up again under Sign-in Security.")
     finally:
         session.close()
     return 0
