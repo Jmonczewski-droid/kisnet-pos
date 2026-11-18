@@ -3,7 +3,7 @@ from typing import List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.constants import ROLES
+from app.core.constants import ROLES, STATION_ROLES
 from app.core.security import hash_pin
 from app.services.auth import open_entry_for
 from app.models.employee import Employee
@@ -149,7 +149,39 @@ def employee_status(employee) -> str:
         return "inactive"
 
 
-def update_employee(session: Session, employee_id: int, data) -> Employee:
+def held_positions(employee) -> List[str]:
+    return [p for p in (employee.positions or "").split(",") if p] or [employee.role]
+
+
+def resolve_access(positions: List[str], access: Optional[str]):
+    """Settle an employee's access level and positions together. Returns (access, positions in ROLES order).
+
+    Managers and owners always hold the admin position (the Command Center); team members never do.
+    When no access level is given, holding the admin position means manager.
+    """
+    if access is None:
+        access = "manager" if "admin" in positions else "team"
+    stations = [role for role in STATION_ROLES if role in positions]
+    if access == "team":
+        if not stations:
+            raise AdminError(422, "A team member needs at least one station position")
+        return access, stations
+    return access, ["admin"] + stations
+
+
+def _other_active_owner(session: Session, employee) -> bool:
+    return session.query(Employee).filter(
+        Employee.access == "owner", Employee.active.is_(True), Employee.archived_at.is_(None),
+        Employee.id != employee.id).first() is not None
+
+
+def _keep_an_owner(session: Session, employee) -> None:
+    """The last owner cannot be removed or demoted: nobody could reach the employee database again."""
+    if employee.access == "owner" and employee.active and not _other_active_owner(session, employee):
+        raise AdminError(409, "This is the only owner. Make someone else an owner first.")
+
+
+def update_employee(session: Session, employee_id: int, data, actor_id: Optional[int] = None) -> Employee:
     """Update an employee with the given data. Only fields sent are updated."""
     employee = session.get(Employee, employee_id)
     if not employee:
@@ -160,17 +192,42 @@ def update_employee(session: Session, employee_id: int, data) -> Employee:
         
     # Apply only the fields sent
     update_data = data.model_dump(exclude_unset=True)
-    
+
+    if "positions" in update_data or "access" in update_data:
+        positions = update_data.get("positions")
+        if positions is None:
+            positions = held_positions(employee)
+        access = update_data.get("access")
+        if access is None and "positions" not in update_data:
+            access = employee.access
+        elif access is None:
+            # Positions sent on their own: keep the access level unless the admin position was added or dropped
+            access = employee.access if (employee.access != "team") == ("admin" in positions) else None
+        access, ordered_positions = resolve_access(positions, access)
+        if access != "owner":
+            _keep_an_owner(session, employee)
+            from app.services.auth import clear_totp
+            clear_totp(employee)  # two-step sign-in belongs to the owner
+        employee.access = access
+        employee.role = ordered_positions[0]
+        employee.positions = ",".join(ordered_positions)
+        # Someone clocked in under a position they no longer hold is clocked out, ending that session
+        entry = open_entry_for(session, employee.id)
+        if entry and (entry.position or employee.role) not in ordered_positions:
+            entry.clocked_out_at = utcnow()
+            entry.token_hash = None
+
     for key, value in update_data.items():
+        if key in ("positions", "access"):
+            continue
         if key == "name":
             setattr(employee, key, value.strip())
         elif key == "pin":
             setattr(employee, "pin_hash", hash_pin(value))
-        elif key == "positions":
-            # Order by ROLES as add_employee does
-            ordered_positions = [role for role in ROLES if role in value]
-            setattr(employee, "role", ordered_positions[0] if ordered_positions else employee.role)
-            setattr(employee, "positions", ",".join(ordered_positions) if ordered_positions else employee.positions)
+            # A PIN someone else set is a starter PIN: the employee picks their own at next sign-in
+            employee.must_change_pin = actor_id != employee.id
+            employee.failed_attempts = 0
+            employee.locked_until = None
         else:
             setattr(employee, key, value)
     
@@ -220,7 +277,8 @@ def deactivate_employee(session: Session, employee_id: int) -> Employee:
         
     if not employee.active:
         raise AdminError(409, "Already inactive")
-        
+
+    _keep_an_owner(session, employee)
     _leave_job(session, employee)
     employee.active = False
     session.commit()
@@ -254,7 +312,8 @@ def archive_employee(session: Session, employee_id: int) -> Employee:
         
     if employee.archived_at is not None:
         raise AdminError(409, "Already archived")
-        
+
+    _keep_an_owner(session, employee)
     _leave_job(session, employee)
     employee.active = False
     employee.archived_at = utcnow()
@@ -278,7 +337,11 @@ def roster(session: Session, include_archived: bool = False) -> List[dict]:
             "id": employee.id,
             "code": employee.code,
             "name": employee.name,
-            "positions": [p for p in (employee.positions or "").split(",") if p] or [employee.role],
+            "positions": held_positions(employee),
+            "access": employee.access,
+            "pin_is_temporary": bool(employee.must_change_pin),
+            "two_step": bool(employee.totp_enabled),
+            "locked": bool(employee.locked_until and employee.locked_until > utcnow()),
             "address": employee.address,
             "dob": employee.dob,
             "hire_date": employee.hire_date,
@@ -397,7 +460,7 @@ def next_code(session: Session, role: str) -> str:
 
 def add_employee(session: Session, data) -> Employee:
     """Add an employee. Positions keep the role order; the first one is the employee's main role."""
-    positions = [role for role in ROLES if role in data.positions]
+    access, positions = resolve_access(data.positions, getattr(data, "access", None))
     code = next_code(session, positions[0])
     number = (session.query(func.max(Employee.number)).scalar() or 0) + 1
     employee = Employee(
@@ -411,6 +474,8 @@ def add_employee(session: Session, data) -> Employee:
         hire_date=data.hire_date,
         ssn_last=code[len(ROLE_PREFIX[positions[0]]):],
         pin_hash=hash_pin(data.pin),
+        access=access,
+        must_change_pin=True,  # the PIN on the card is a starter PIN; the employee picks their own
         location_id=1,
         active=True,
     )

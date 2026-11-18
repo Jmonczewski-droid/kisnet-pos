@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from app.db.base import get_db
-from app.schemas.auth import ClockInIn, EmployeeOut, TokenOut, ClockedOutOut
-from app.services.auth import clock_in, login, clock_out, logout, preview_clock_in, open_entry_for, AuthError, get_employee_by_token
+from app.schemas.auth import ClockInIn, EmployeeOut, TokenOut, ClockedOutOut, PinChangeIn, OtpIn
+from app.services.auth import (clock_in, login, clock_out, logout, preview_clock_in, open_entry_for, AuthError,
+                               get_employee_by_token, change_pin, totp_status, totp_setup, totp_enable, totp_disable)
 from app.core.time import utcnow
 from app.api.deps import get_current_employee
 from app.models.employee import Employee
@@ -11,13 +12,19 @@ from app.models.time_entry import TimeEntry
 
 router = APIRouter()
 
+
+def _http(error: AuthError) -> HTTPException:
+    """AuthError as an HTTP error; the reason code travels in a header so the screens can act on it."""
+    headers = {"X-Error-Code": error.code} if error.code else None
+    return HTTPException(status_code=error.status_code, detail=error.detail, headers=headers)
+
 @router.post("/clock-in")
 def clock_in_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
     """Clock in without logging in. Returns the employee, the position and the clock-in time."""
     try:
         entry = clock_in(db, clock_in_data.code, clock_in_data.pin, clock_in_data.position)
     except AuthError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.detail)
+        raise _http(e)
     employee = db.get(Employee, entry.employee_id)
     return {"employee": EmployeeOut.model_validate(employee), "position": entry.position,
             "clocked_in_at": entry.clocked_in_at}
@@ -27,9 +34,9 @@ def clock_in_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
 def login_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
     """Log in to a station. The person must already be on the clock."""
     try:
-        employee, token = login(db, clock_in_data.code, clock_in_data.pin)
+        employee, token = login(db, clock_in_data.code, clock_in_data.pin, clock_in_data.otp)
     except AuthError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.detail)
+        raise _http(e)
     return TokenOut(token=token, employee=EmployeeOut.model_validate(employee))
 
 
@@ -39,7 +46,7 @@ def preview_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
     try:
         info = preview_clock_in(db, clock_in_data.code, clock_in_data.pin)
     except AuthError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.detail)
+        raise _http(e)
     return {
         "employee": EmployeeOut.model_validate(info["employee"]),
         "positions": info["positions"],
@@ -47,6 +54,51 @@ def preview_endpoint(clock_in_data: ClockInIn, db: Session = Depends(get_db)):
         "clocked_in_at": info["clocked_in_at"],
         "now": utcnow(),
     }
+
+
+@router.post("/change-pin")
+def change_pin_endpoint(data: PinChangeIn, db: Session = Depends(get_db)):
+    """An employee sets their own PIN, proving who they are with their code and current PIN."""
+    try:
+        change_pin(db, data.code, data.pin, data.new_pin)
+    except AuthError as e:
+        raise _http(e)
+    return {"changed": True}
+
+
+def _real_employee(db: Session, user) -> Employee:
+    return db.get(Employee, user.id)
+
+
+@router.get("/totp")
+def totp_status_endpoint(user=Depends(get_current_employee), db: Session = Depends(get_db)):
+    """Whether the signed-in person has two-step sign-in on."""
+    return totp_status(_real_employee(db, user))
+
+
+@router.post("/totp/setup")
+def totp_setup_endpoint(user=Depends(get_current_employee), db: Session = Depends(get_db)):
+    """Owner only: a new authenticator key (with QR code). Takes effect once confirmed with a code."""
+    try:
+        return totp_setup(db, _real_employee(db, user))
+    except AuthError as e:
+        raise _http(e)
+
+
+@router.post("/totp/enable")
+def totp_enable_endpoint(data: OtpIn, user=Depends(get_current_employee), db: Session = Depends(get_db)):
+    try:
+        return totp_enable(db, _real_employee(db, user), data.otp)
+    except AuthError as e:
+        raise _http(e)
+
+
+@router.post("/totp/disable")
+def totp_disable_endpoint(data: OtpIn, user=Depends(get_current_employee), db: Session = Depends(get_db)):
+    try:
+        return totp_disable(db, _real_employee(db, user), data.otp)
+    except AuthError as e:
+        raise _http(e)
 
 
 @router.post("/logout")

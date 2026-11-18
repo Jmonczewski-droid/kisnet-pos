@@ -21,8 +21,11 @@ function api(path, opts = {}) {
                 if (response.status === 401 && !path.includes('/auth/')) {
                     expireSession();
                 }
-                return response.json().then(err => {
-                    throw new Error(err.detail || `HTTP error! status: ${response.status}`);
+                return response.json().catch(() => ({})).then(err => {
+                    const error = new Error(typeof err.detail === 'string' ? err.detail : `HTTP error! status: ${response.status}`);
+                    error.status = response.status;
+                    error.code = response.headers.get('X-Error-Code');  // e.g. pin_change_required, otp_required
+                    throw error;
                 });
             }
             // 204 No Content (e.g. voiding an item) has no body to parse
@@ -55,7 +58,15 @@ function stationFor(role) {
     return { admin: '/command', host: '/host', server: '/server', bartender: '/bar', kitchen: '/kitchen' }[role];
 }
 
+// Database management screens: the owner only
+const OWNER_PATHS = ['/employees', '/recipes', '/devices', '/security'];
+
+function isOwner() {
+    return !!state.employee && state.employee.access === 'owner';
+}
+
 function canVisit(role, path) {
+    if (OWNER_PATHS.includes(path)) return role === 'admin' && isOwner();
     if (role === 'admin') return path in SCREENS;
     if (path === '/timecard') return true;
     if (role === 'bartender') return path === '/bar' || path === '/barseats';
@@ -713,6 +724,10 @@ function handleClockIn() {
     const credentials = loginCredentials();
     if (!credentials) return;
 
+    startClockIn(credentials);
+}
+
+function startClockIn(credentials) {
     api('/auth/preview', { method: 'POST', body: JSON.stringify(credentials) })
         .then(preview => {
             if (preview.on_clock) {
@@ -721,7 +736,10 @@ function handleClockIn() {
             }
             confirmClockIn(preview, credentials);
         })
-        .catch(error => setLoginMessage(error.message));
+        .catch(error => {
+            if (error.code === 'pin_change_required') { promptOwnPin(credentials, startClockIn); return; }
+            setLoginMessage(error.message);
+        });
 }
 
 function roleLabel(role) {
@@ -768,6 +786,10 @@ function handleLogIn() {
     const credentials = loginCredentials();
     if (!credentials) return;
 
+    startLogIn(credentials);
+}
+
+function startLogIn(credentials) {
     api('/auth/login', { method: 'POST', body: JSON.stringify(credentials) })
         .then(data => {
             sessionStorage.setItem('kisnet.token', data.token);
@@ -780,7 +802,16 @@ function handleLogIn() {
             const role = data.employee.role;
             goTo(returnTo && canVisit(role, returnTo.slice(1)) ? returnTo.slice(1) : stationFor(role));
         })
-        .catch(error => setLoginMessage(error.message));
+        .catch(error => {
+            const { otp, ...withoutCode } = credentials;
+            if (error.code === 'pin_change_required') { promptOwnPin(withoutCode, startLogIn); return; }
+            if (error.code === 'otp_required' || error.code === 'otp_invalid') {
+                promptAuthenticatorCode(error.code === 'otp_invalid' ? error.message : '',
+                                        code => startLogIn({ ...withoutCode, otp: code }));
+                return;
+            }
+            setLoginMessage(error.message);
+        });
 }
 
 function renderCommand(root) {
@@ -847,7 +878,13 @@ function renderCommand(root) {
 }
 
 // System > Employees and Recipes (admin): edit, deactivate, reactivate and archive
-const POSITION_OPTIONS = ['admin', 'host', 'server', 'bartender', 'kitchen'];
+const POSITION_OPTIONS = ['host', 'server', 'bartender', 'kitchen'];  // stations; access level decides management rights
+const ACCESS_LABELS = { owner: 'Owner', manager: 'Manager', team: 'Team Member' };
+const ACCESS_HELP = {
+    owner: 'Full access, including this employee database, recipes and devices.',
+    manager: 'Runs the restaurant: command center, reports, end of day and every station. No database management.',
+    team: 'Works the stations ticked below.'
+};
 const ACTION_DONE = { deactivate: 'Deactivated', reactivate: 'Reactivated', archive: 'Archived' };
 let rosterRows = [];
 let recipeRows = [];
@@ -896,13 +933,15 @@ function loadRoster() {
             const money = hours => `${hours.toFixed(2)} h`;
             box.innerHTML = `
                 <table class="data-table">
-                    <thead><tr><th>Code</th><th>Name</th><th>Positions</th><th>Status</th><th>Hire date</th><th>SSN</th>
+                    <thead><tr><th>Code</th><th>Name</th><th>Access</th><th>Positions</th><th>Sign-in</th><th>Status</th><th>Hire date</th><th>SSN</th>
                         <th>On clock</th><th>Hours this week</th><th>Address</th><th>DOB</th><th></th></tr></thead>
                     <tbody>${rows.map(row => `
                         <tr style="${row.status === 'archived' ? 'opacity: 0.6' : ''}">
                             <td>${escapeHtml(row.code)}</td>
                             <td>${escapeHtml(row.name)}</td>
-                            <td>${row.positions.map(roleLabel).join(', ')}</td>
+                            <td>${escapeHtml(ACCESS_LABELS[row.access] || row.access)}</td>
+                            <td>${row.positions.filter(role => role !== 'admin').map(role => escapeHtml(roleLabel(role))).join(', ')}</td>
+                            <td>${[row.locked ? 'Locked' : '', row.pin_is_temporary ? 'Starter PIN' : 'Own PIN', row.two_step ? 'Two-step' : ''].filter(Boolean).join(', ')}</td>
                             <td>${statusLabel(row.status)}</td>
                             <td>${row.hire_date || ''}</td>
                             <td>${escapeHtml(row.ssn)}</td>
@@ -949,15 +988,25 @@ function showEmployeeForm(employee) {
         <div class="form-group"><label for="emp-address">Address</label><input type="text" id="emp-address" value="${editing ? escapeHtml(employee.address || '') : ''}"></div>
         <div class="form-group"><label for="emp-dob">Date of birth</label><input type="date" id="emp-dob" value="${editing && employee.dob ? employee.dob : ''}"></div>
         <div class="form-group"><label for="emp-hire">Hire date</label><input type="date" id="emp-hire" value="${editing ? (employee.hire_date || '') : isoDay(new Date())}"></div>
+        <div class="form-group"><label for="emp-access">Access level</label>
+            <select id="emp-access">
+                ${Object.keys(ACCESS_LABELS).reverse().map(level => `<option value="${level}"${(editing ? employee.access : 'team') === level ? ' selected' : ''}>${ACCESS_LABELS[level]}</option>`).join('')}
+            </select>
+            <small id="emp-access-help"></small></div>
         <fieldset class="form-group">
-            <legend>Positions (tick every job this person can do)</legend>
+            <legend>Stations (tick every job this person can work)</legend>
             ${POSITION_OPTIONS.map(role => `
                 <label class="checkbox-row"><input type="checkbox" class="emp-position" value="${escapeHtml(role)}"${held.includes(role) ? ' checked' : ''}> ${escapeHtml(roleLabel(role))}</label>`).join('')}
         </fieldset>
-        <div class="form-group"><label for="emp-pin">${editing ? 'PIN (leave blank to keep)' : 'PIN (4 digits or more)'}</label>
-            <input type="password" id="emp-pin" value="${editing ? '' : '1234'}"></div>
+        <div class="form-group"><label for="emp-pin">${editing ? 'New starter PIN (leave blank to keep their PIN)' : 'Starter PIN (4 or more characters)'}</label>
+            <input type="text" id="emp-pin" autocomplete="off" value="${editing ? '' : '1234'}">
+            <small>Give this to the employee. They must replace it with their own PIN the first time they sign in, so nobody else knows it.${editing ? ' Setting one also unlocks a locked sign-in.' : ''}</small></div>
         <button id="emp-save" class="btn-large">${editing ? 'Save changes' : 'Save employee'}</button>
         <button id="emp-cancel" class="btn-large">Cancel</button>`;
+    const access = document.getElementById('emp-access');
+    const showAccessHelp = () => { document.getElementById('emp-access-help').textContent = ACCESS_HELP[access.value]; };
+    access.addEventListener('change', showAccessHelp);
+    showAccessHelp();
     document.getElementById('emp-cancel').addEventListener('click', () => { form.innerHTML = ''; });
     document.getElementById('emp-save').addEventListener('click', () => saveEmployee(editing ? employee.id : null));
     document.getElementById('emp-name').focus();
@@ -967,14 +1016,16 @@ function saveEmployee(id) {
     const positions = [...document.querySelectorAll('.emp-position:checked')].map(box => box.value);
     const name = document.getElementById('emp-name').value.trim();
     if (!name) { alert('Enter the name'); return; }
-    if (positions.length === 0) { alert('Tick at least one position'); return; }
+    const access = document.getElementById('emp-access').value;
+    if (positions.length === 0 && access === 'team') { alert('Tick at least one station for a team member'); return; }
     const pin = document.getElementById('emp-pin').value;
     const body = {
         name,
         address: document.getElementById('emp-address').value.trim() || null,
         dob: document.getElementById('emp-dob').value || null,
         hire_date: document.getElementById('emp-hire').value || null,
-        positions
+        positions,
+        access
     };
     if (pin || id === null) body.pin = pin;
     const request = id === null
@@ -1527,6 +1578,175 @@ function loadDisplayBoard(root) {
         });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Sign-in helpers: an employee choosing their own PIN, and the owner's authenticator code
+// ---------------------------------------------------------------------------------------------
+
+// The PIN on a new employee card is a starter PIN. Before first use the employee replaces it with
+// one only they know. `then` runs with the updated credentials once the new PIN is saved.
+function promptOwnPin(credentials, then) {
+    const body = openModal('Choose your own PIN', `
+        <p>The PIN you were given is a starter PIN. Choose one that only you know.</p>
+        <div class="form-group"><label for="own-pin">New PIN (4 or more characters)</label>
+            <input type="password" id="own-pin" autocomplete="new-password" inputmode="numeric"></div>
+        <div class="form-group"><label for="own-pin-again">New PIN again</label>
+            <input type="password" id="own-pin-again" autocomplete="new-password" inputmode="numeric"></div>
+        <p id="own-pin-status" class="status-note"></p>
+        <button id="own-pin-save" class="btn-large">Save my PIN</button>
+        <button id="own-pin-cancel" class="btn-large">Cancel</button>`);
+    const status = body.querySelector('#own-pin-status');
+    body.querySelector('#own-pin-cancel').addEventListener('click', closeModal);
+    body.querySelector('#own-pin-save').addEventListener('click', () => {
+        const pin = body.querySelector('#own-pin').value;
+        if (pin.length < 4) { status.textContent = 'Use at least 4 characters.'; return; }
+        if (pin !== body.querySelector('#own-pin-again').value) { status.textContent = 'The two PINs do not match.'; return; }
+        if (pin === credentials.pin) { status.textContent = 'Choose a PIN different from the starter PIN.'; return; }
+        api('/auth/change-pin', { method: 'POST', body: JSON.stringify({ code: credentials.code, pin: credentials.pin, new_pin: pin }) })
+            .then(() => {
+                closeModal();
+                const field = document.getElementById('pin');
+                if (field) field.value = pin;
+                setLoginMessage('Your PIN is saved.');
+                then({ ...credentials, pin });
+            })
+            .catch(error => { status.textContent = error.message; });
+    });
+    body.querySelector('#own-pin').focus();
+}
+
+// Second step for the owner: the 6-digit code from their authenticator app
+function promptAuthenticatorCode(message, then) {
+    const body = openModal('Authenticator code', `
+        <p>Enter the 6-digit code from your authenticator app.</p>
+        <div class="form-group"><label for="otp-code">Code</label>
+            <input type="text" id="otp-code" class="pairing-input" maxlength="7" inputmode="numeric" autocomplete="one-time-code"></div>
+        <p id="otp-status" class="status-note">${escapeHtml(message || '')}</p>
+        <button id="otp-go" class="btn-large">Sign in</button>
+        <button id="otp-cancel" class="btn-large">Cancel</button>`);
+    const input = body.querySelector('#otp-code');
+    const submit = () => {
+        const otp = input.value.replace(/\D/g, '');
+        if (otp.length !== 6) { body.querySelector('#otp-status').textContent = 'The code has 6 digits.'; return; }
+        closeModal();
+        then(otp);
+    };
+    body.querySelector('#otp-cancel').addEventListener('click', closeModal);
+    body.querySelector('#otp-go').addEventListener('click', submit);
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') submit(); });
+    input.focus();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Owner Security: two-step sign-in with an authenticator app
+// ---------------------------------------------------------------------------------------------
+function renderSecurity(root) {
+    root.innerHTML = `
+        <div class="card">
+            <h2>Owner Security</h2>
+            <p>The owner is the only person who can open the employee database, recipes and devices.
+               Two-step sign-in protects that: signing in takes your PIN <strong>and</strong> a code from an app on your phone.</p>
+            <div id="sec-body"><p>Loading...</p></div>
+            <p id="sec-status" class="status-note"></p>
+            <h3>Your PIN</h3>
+            <p>Change the PIN you sign in with.</p>
+            <button id="sec-change-pin" class="btn-large">Change my PIN</button>
+        </div>`;
+    root.querySelector('#sec-change-pin').addEventListener('click', changeMyPin);
+    loadSecurity();
+}
+
+function changeMyPin() {
+    const body = openModal('Change my PIN', `
+        <div class="form-group"><label for="my-pin-now">Current PIN</label><input type="password" id="my-pin-now" autocomplete="current-password"></div>
+        <div class="form-group"><label for="my-pin-new">New PIN (4 or more characters)</label><input type="password" id="my-pin-new" autocomplete="new-password"></div>
+        <div class="form-group"><label for="my-pin-again">New PIN again</label><input type="password" id="my-pin-again" autocomplete="new-password"></div>
+        <p id="my-pin-status" class="status-note"></p>
+        <button id="my-pin-save" class="btn-large">Save</button>
+        <button id="my-pin-cancel" class="btn-large">Cancel</button>`);
+    const status = body.querySelector('#my-pin-status');
+    body.querySelector('#my-pin-cancel').addEventListener('click', closeModal);
+    body.querySelector('#my-pin-save').addEventListener('click', () => {
+        const pin = body.querySelector('#my-pin-now').value;
+        const next = body.querySelector('#my-pin-new').value;
+        if (next.length < 4) { status.textContent = 'Use at least 4 characters.'; return; }
+        if (next !== body.querySelector('#my-pin-again').value) { status.textContent = 'The two PINs do not match.'; return; }
+        api('/auth/change-pin', { method: 'POST', body: JSON.stringify({ code: state.employee.code, pin, new_pin: next }) })
+            .then(() => {
+                closeModal();
+                document.getElementById('sec-status').textContent = 'Your PIN is changed.';
+            })
+            .catch(error => { status.textContent = error.message; });
+    });
+}
+
+function loadSecurity() {
+    const box = document.getElementById('sec-body');
+    if (!box) return;
+    api('/auth/totp')
+        .then(info => {
+            if (info.enabled) {
+                box.innerHTML = `
+                    <p><span class="connection connection-ok">Two-step sign-in is ON.</span></p>
+                    <p>To move to a new phone, turn it off and set it up again.</p>
+                    <div class="form-group"><label for="sec-off-code">Code from your app, to turn it off</label>
+                        <input type="text" id="sec-off-code" class="pairing-input" maxlength="7" inputmode="numeric" autocomplete="one-time-code"></div>
+                    <button id="sec-off" class="btn-large">Turn off two-step sign-in</button>
+                    <p><small>Lost the phone? On the server computer run <code>venv/bin/python -m app.cli reset-two-step ${escapeHtml(state.employee.code)}</code></small></p>`;
+                box.querySelector('#sec-off').addEventListener('click', () => {
+                    const otp = box.querySelector('#sec-off-code').value.replace(/\D/g, '');
+                    api('/auth/totp/disable', { method: 'POST', body: JSON.stringify({ otp }) })
+                        .then(() => { document.getElementById('sec-status').textContent = 'Two-step sign-in is off.'; loadSecurity(); })
+                        .catch(error => { document.getElementById('sec-status').textContent = error.message; });
+                });
+            } else {
+                box.innerHTML = `
+                    <p><span class="connection connection-untested">Two-step sign-in is off.</span></p>
+                    <p>You need an authenticator app on your phone. Any one works; these are free and open source:
+                       <strong>Aegis</strong> (Android), <strong>2FAS</strong> (Android and iPhone), <strong>Ente Auth</strong> (Android, iPhone and PC).</p>
+                    <button id="sec-setup" class="btn-large">Set up two-step sign-in</button>`;
+                box.querySelector('#sec-setup').addEventListener('click', startTwoStepSetup);
+            }
+        })
+        .catch(error => { box.innerHTML = `<p class="status-note">Could not load (${escapeHtml(error.message)}).</p>`; });
+}
+
+function startTwoStepSetup() {
+    const box = document.getElementById('sec-body');
+    const status = document.getElementById('sec-status');
+    api('/auth/totp/setup', { method: 'POST' })
+        .then(setup => {
+            status.textContent = '';
+            const spaced = setup.secret.replace(/(.{4})/g, '$1 ').trim();
+            box.innerHTML = `
+                <ol class="setup-steps">
+                    <li>Open your authenticator app and add an account.</li>
+                    <li>Scan this code with the app, or type the key in by hand.
+                        <div id="sec-qr" class="qr-box"></div>
+                        <p>Key: <code class="secret-key">${escapeHtml(spaced)}</code></p>
+                        <p><a id="sec-link" href="#">Setting up on this same phone? Tap here to open the app.</a></p></li>
+                    <li>Enter the 6-digit code the app shows to finish.
+                        <div class="form-group"><input type="text" id="sec-on-code" class="pairing-input" maxlength="7" inputmode="numeric" autocomplete="one-time-code"></div>
+                        <button id="sec-on" class="btn-large">Turn on two-step sign-in</button>
+                        <button id="sec-cancel" class="btn-large">Cancel</button></li>
+                </ol>`;
+            // The QR code is an SVG the server drew from the key; shown as an image so nothing in it can run
+            const image = document.createElement('img');
+            image.alt = 'QR code for your authenticator app';
+            image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(setup.qr_svg);
+            box.querySelector('#sec-qr').appendChild(image);
+            box.querySelector('#sec-link').href = setup.uri;
+            box.querySelector('#sec-cancel').addEventListener('click', loadSecurity);
+            box.querySelector('#sec-on').addEventListener('click', () => {
+                const otp = box.querySelector('#sec-on-code').value.replace(/\D/g, '');
+                api('/auth/totp/enable', { method: 'POST', body: JSON.stringify({ otp }) })
+                    .then(() => { status.textContent = 'Two-step sign-in is on. You will be asked for a code each time you log in.'; loadSecurity(); })
+                    .catch(error => { status.textContent = error.message; });
+            });
+            box.querySelector('#sec-on-code').focus();
+        })
+        .catch(error => { status.textContent = error.message; });
+}
+
 // Daily Summary (admin): totals for one business day, items by popularity, and the End of Day export
 function renderSummary(root) {
     root.innerHTML = `
@@ -1656,8 +1876,8 @@ function renderReports(root) {
         <div class="card">
             <h2>Menu Admin</h2>
             <button id="download-menu-btn" class="btn-large">Download menu CSV</button>
-            <div class="form-group">
-                <label for="menu-import-file">Import Menu CSV:</label>
+            <div class="form-group" ${isOwner() ? '' : 'hidden'}>
+                <label for="menu-import-file">Import Menu CSV (owner only):</label>
                 <input type="file" id="menu-import-file" accept=".csv">
             </div>
             <div id="import-status"></div>
@@ -2305,6 +2525,7 @@ const SCREENS = {
     '/employees': renderEmployees,
     '/recipes': renderRecipes,
     '/devices': renderDevices,
+    '/security': renderSecurity,
     '/display': renderDisplay,
     '/home': renderHome
 };
@@ -2516,7 +2737,7 @@ const MENU_LABELS = {
     '/command': 'Command Center', '/reports': 'Reports', '/host': 'Host', '/server': 'Server',
     '/bar': 'Drink Queue', '/barseats': 'Bar Seats', '/kitchen': 'Kitchen', '/timecard': 'Time Card',
     '/summary': 'Daily Summary', '/employees': 'Employees', '/recipes': 'Recipes',
-    '/devices': 'Device Management', '/display': 'Connect a Screen'
+    '/devices': 'Device Management', '/display': 'Connect a Screen', '/security': 'Owner Security'
 };
 
 // The three-bar menu sits outside the screens, so it is available on every page
@@ -2547,8 +2768,8 @@ function renderMenu() {
     if (!state.employee) {
         paths = ['/home', '/login', '/timecard', '/display'];
     } else if (state.employee.role === 'admin') {
-        paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard',
-                 '/employees', '/recipes', '/devices'];
+        paths = ['/command', '/summary', '/reports', '/host', '/server', '/barseats', '/bar', '/kitchen', '/timecard'];
+        if (isOwner()) paths = paths.concat(OWNER_PATHS);  // a manager runs the floor; the System section is the owner's
     } else {
         paths = state.employee.role === 'bartender'
             ? ['/barseats', '/bar', '/timecard']
@@ -2556,7 +2777,7 @@ function renderMenu() {
     }
     menu.innerHTML = '<h3 class="side-menu-title">Menu</h3>';
     paths.forEach((path, index) => {
-        // Admin's System section (Employees, Recipes and Device Management) sits under its own heading
+        // The owner's System section (Employees, Recipes, Device Management, Owner Security) sits under its own heading
         if (path === '/employees') {
             menu.insertAdjacentHTML('beforeend', '<h3 class="side-menu-title side-menu-section">System</h3>');
         }
@@ -2617,12 +2838,17 @@ function updateScreen() {
         return;
     }
 
-    renderNavBar();
     const path = window.location.hash.slice(1) || '/login';
     if (!SCREENS[path]) {
         go('/login');
         return;
     }
+    // Typing an address does not get around access: send people back to their own station
+    if (!PUBLIC_PATHS.includes(path) && !canVisit(state.employee.role, path)) {
+        go(stationFor(state.employee.role));
+        return;
+    }
+    renderNavBar();
     SCREENS[path](mainContent);
 }
 

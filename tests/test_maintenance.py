@@ -25,6 +25,12 @@ def _new_employee(positions, name="Ruth Adams", pin="4321"):
             "positions": positions, "pin": pin}
 
 
+def _claim(api, code, starter, pin):
+    """A new employee replaces the starter PIN on their card with their own (required before first sign-in)."""
+    response = api.post("/api/v1/auth/change-pin", json={"code": code, "pin": starter, "new_pin": pin})
+    assert response.status_code == 200, response.text
+
+
 def test_add_employee_gets_code_and_masked_ssn(api, login):
     headers = login("ADM1")
     response = api.post("/api/v1/admin/employees", json=_new_employee(["server", "bartender"]), headers=headers)
@@ -43,7 +49,8 @@ def test_add_employee_gets_code_and_masked_ssn(api, login):
 
 def test_multi_position_employee_must_choose_position_at_clock_in(api, login, db):
     admin = login("ADM1")
-    api.post("/api/v1/admin/employees", json=_new_employee(["server", "bartender"], name="Multi Job", pin="5555"), headers=admin)
+    api.post("/api/v1/admin/employees", json=_new_employee(["server", "bartender"], name="Multi Job", pin="0000"), headers=admin)
+    _claim(api, "SRV5", "0000", "5555")
 
     assert api.post("/api/v1/auth/clock-in", json={"code": "SRV5", "pin": "5555"}).status_code == 422
     response = api.post("/api/v1/auth/clock-in", json={"code": "SRV5", "pin": "5555", "position": "bartender"})
@@ -57,7 +64,8 @@ def test_multi_position_employee_must_choose_position_at_clock_in(api, login, db
 
 def test_position_must_be_on_the_employees_list(api, login):
     admin = login("ADM1")
-    api.post("/api/v1/admin/employees", json=_new_employee(["server"], name="One Job", pin="6666"), headers=admin)
+    api.post("/api/v1/admin/employees", json=_new_employee(["server"], name="One Job", pin="0000"), headers=admin)
+    _claim(api, "SRV5", "0000", "6666")
     response = api.post("/api/v1/auth/clock-in", json={"code": "SRV5", "pin": "6666", "position": "kitchen"})
     assert response.status_code == 422
 

@@ -40,10 +40,14 @@ def add_employee(api, login):
         headers = login("ADM1")
         response = api.post("/api/v1/admin/employees", 
                           json={"name": name, "address": "123 Test St", "dob": "1990-01-01", 
-                                "hire_date": "2026-10-01", "positions": positions, "pin": pin},
+                                "hire_date": "2026-10-01", "positions": positions, "pin": "0000"},
                           headers=headers)
         assert response.status_code == 201
         employee_id = response.json()["id"]
+        # The card's PIN is a starter PIN; the employee replaces it with their own before signing in
+        claimed = api.post("/api/v1/auth/change-pin",
+                           json={"code": response.json()["code"], "pin": "0000", "new_pin": pin})
+        assert claimed.status_code == 200
         return employee_id
     return _add_employee
 
@@ -89,10 +93,15 @@ def test_patch_pin(api, login, add_employee):
     
     assert response.status_code == 200
     
-    # Verify new PIN works
+    # A PIN the owner sets is a starter PIN: it only lets the employee choose their own
     response = api.post("/api/v1/auth/clock-in", 
                        json={"code": "SRV5", "pin": "9876"})
-    assert response.status_code == 200
+    assert response.status_code == 403
+    assert response.headers["X-Error-Code"] == "pin_change_required"
+    assert api.post("/api/v1/auth/change-pin",
+                    json={"code": "SRV5", "pin": "9876", "new_pin": "2468"}).status_code == 200
+    assert api.post("/api/v1/auth/clock-in", json={"code": "SRV5", "pin": "2468"}).status_code == 200
+    assert api.post("/api/v1/auth/clock-in", json={"code": "SRV5", "pin": "9876"}).status_code == 401
     
     # Verify old PIN is rejected
     response = api.post("/api/v1/auth/clock-in", 

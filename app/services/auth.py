@@ -5,7 +5,10 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from app.models.employee import Employee
 from app.models.time_entry import TimeEntry
-from app.core.security import verify_pin, new_token, hash_token
+from datetime import timedelta
+from app.core import totp
+from app.core.constants import LOCKOUT_MINUTES, MAX_FAILED_ATTEMPTS
+from app.core.security import hash_pin, verify_pin, new_token, hash_token
 from fastapi import HTTPException, status
 
 
@@ -26,14 +29,41 @@ def employee_positions(employee: Employee) -> list:
 
 
 class AuthError(Exception):
-    def __init__(self, status_code: int, detail: str):
+    """`code` is a short machine-readable reason the screens act on (sent as the X-Error-Code header)."""
+
+    def __init__(self, status_code: int, detail: str, code: Optional[str] = None):
         self.status_code = status_code
         self.detail = detail
+        self.code = code
         super().__init__(detail)
 
 
-def check_pin(session: Session, code: str, pin: str) -> Employee:
-    """Return the active employee for code+PIN, or raise AuthError. Has no side effects."""
+def _check_not_locked(employee: Employee) -> None:
+    if employee.locked_until and employee.locked_until > utcnow():
+        minutes = max(1, int((employee.locked_until - utcnow()).total_seconds() // 60) + 1)
+        raise AuthError(status.HTTP_429_TOO_MANY_REQUESTS,
+                        f"Too many wrong attempts. Try again in {minutes} minute{'s' if minutes != 1 else ''}.",
+                        code="locked")
+
+
+def _record_failure(session: Session, employee: Employee) -> None:
+    """Count a wrong PIN or code; lock the sign-in for a few minutes after too many in a row."""
+    employee.failed_attempts = (employee.failed_attempts or 0) + 1
+    if employee.failed_attempts >= MAX_FAILED_ATTEMPTS:
+        employee.failed_attempts = 0
+        employee.locked_until = utcnow() + timedelta(minutes=LOCKOUT_MINUTES)
+    session.commit()
+
+
+def _record_success(session: Session, employee: Employee) -> None:
+    if employee.failed_attempts or employee.locked_until:
+        employee.failed_attempts = 0
+        employee.locked_until = None
+        session.commit()
+
+
+def _verify_code_and_pin(session: Session, code: str, pin: str) -> Employee:
+    """The active employee for code+PIN, or AuthError. Wrong PINs are counted toward a lockout."""
     employee = session.query(Employee).filter_by(code=code).first()
 
     if not employee:
@@ -42,10 +72,103 @@ def check_pin(session: Session, code: str, pin: str) -> Employee:
     if not employee.active:
         raise AuthError(status.HTTP_401_UNAUTHORIZED, "Employee is inactive")
 
+    _check_not_locked(employee)
+
     if not verify_pin(pin, employee.pin_hash):
+        _record_failure(session, employee)
         raise AuthError(status.HTTP_401_UNAUTHORIZED, "Invalid code or PIN")
 
     return employee
+
+
+def check_pin(session: Session, code: str, pin: str) -> Employee:
+    """Return the active employee for code+PIN, or raise AuthError.
+
+    A PIN the owner set is only good for choosing a new one: the employee must pick their own first.
+    """
+    employee = _verify_code_and_pin(session, code, pin)
+    if employee.must_change_pin:
+        raise AuthError(status.HTTP_403_FORBIDDEN, "Choose your own PIN before you sign in.",
+                        code="pin_change_required")
+    if not employee.totp_enabled:
+        _record_success(session, employee)  # with two-step sign-in, only a correct code clears the count
+    return employee
+
+
+def change_pin(session: Session, code: str, pin: str, new_pin: str) -> Employee:
+    """An employee replaces their PIN with one only they know."""
+    employee = _verify_code_and_pin(session, code, pin)
+    if new_pin == pin:
+        raise AuthError(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose a PIN different from the current one")
+    employee.pin_hash = hash_pin(new_pin)
+    employee.must_change_pin = False
+    employee.failed_attempts = 0
+    employee.locked_until = None
+    session.commit()
+    return employee
+
+
+def _check_otp(session: Session, employee: Employee, otp: Optional[str]) -> None:
+    """Second step for an employee with an authenticator app: a current code, usable once."""
+    if not otp:
+        raise AuthError(status.HTTP_401_UNAUTHORIZED, "Enter the code from your authenticator app.",
+                        code="otp_required")
+    step = totp.matching_step(employee.totp_secret, otp, after_step=employee.totp_last_step)
+    if step is None:
+        _record_failure(session, employee)
+        raise AuthError(status.HTTP_401_UNAUTHORIZED, "That code is not correct, or has already been used.",
+                        code="otp_invalid")
+    employee.totp_last_step = step
+    employee.failed_attempts = 0
+    employee.locked_until = None
+    session.commit()
+
+
+def totp_status(employee: Employee) -> dict:
+    return {"enabled": bool(employee.totp_enabled), "pending": bool(employee.totp_secret and not employee.totp_enabled)}
+
+
+def totp_setup(session: Session, employee: Employee) -> dict:
+    """Start two-step sign-in: a fresh key to load into an authenticator app. Not active until confirmed."""
+    if employee.access != "owner":
+        raise AuthError(status.HTTP_403_FORBIDDEN, "Two-step sign-in is for the owner")
+    if employee.totp_enabled:
+        raise AuthError(status.HTTP_409_CONFLICT, "Two-step sign-in is already on. Turn it off first to set up a new device.")
+    employee.totp_secret = totp.new_secret()
+    employee.totp_last_step = None
+    session.commit()
+    uri = totp.provisioning_uri(employee.totp_secret, employee.code)
+    return {"secret": employee.totp_secret, "uri": uri, "qr_svg": totp.qr_svg(uri)}
+
+
+def totp_enable(session: Session, employee: Employee, otp: str) -> dict:
+    """Confirm the app is set up by entering a code from it; two-step sign-in is on from then."""
+    if employee.totp_enabled:
+        raise AuthError(status.HTTP_409_CONFLICT, "Two-step sign-in is already on")
+    if not employee.totp_secret:
+        raise AuthError(status.HTTP_409_CONFLICT, "Start the setup first")
+    step = totp.matching_step(employee.totp_secret, otp)
+    if step is None:
+        raise AuthError(status.HTTP_422_UNPROCESSABLE_ENTITY, "That code is not correct. Check the app and try again.")
+    employee.totp_enabled = True
+    employee.totp_last_step = step
+    session.commit()
+    return totp_status(employee)
+
+
+def totp_disable(session: Session, employee: Employee, otp: str) -> dict:
+    if not employee.totp_enabled:
+        raise AuthError(status.HTTP_409_CONFLICT, "Two-step sign-in is not on")
+    _check_otp(session, employee, otp)
+    clear_totp(employee)
+    session.commit()
+    return totp_status(employee)
+
+
+def clear_totp(employee: Employee) -> None:
+    employee.totp_secret = None
+    employee.totp_enabled = False
+    employee.totp_last_step = None
 
 
 def preview_clock_in(session: Session, code: str, pin: str) -> dict:
@@ -75,12 +198,17 @@ def clock_in(session: Session, code: str, pin: str, position: Optional[str] = No
     return entry
 
 
-def login(session: Session, code: str, pin: str) -> Tuple[SessionUser, str]:
-    """Open a station session in the position of the current shift. Only possible while on the clock."""
+def login(session: Session, code: str, pin: str, otp: Optional[str] = None) -> Tuple[SessionUser, str]:
+    """Open a station session in the position of the current shift. Only possible while on the clock.
+
+    An employee with an authenticator app set up (the owner) must also give a current code.
+    """
     employee = check_pin(session, code, pin)
     entry = open_entry_for(session, employee.id)
     if not entry:
         raise AuthError(status.HTTP_409_CONFLICT, "Not clocked in. Clock in first.")
+    if employee.totp_enabled:
+        _check_otp(session, employee, otp)
     token = new_token()
     entry.token_hash = hash_token(token)
     session.commit()

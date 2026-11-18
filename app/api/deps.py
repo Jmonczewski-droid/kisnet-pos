@@ -34,3 +34,10 @@ def require_roles(*roles: str):
         return current_employee
     
     return _require_roles
+
+
+def require_owner(current_employee: Employee = Depends(get_current_employee)) -> Employee:
+    """Database management (employees, recipes, devices, menu import) is for the owner only."""
+    if getattr(current_employee, "access", "team") != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner access required")
+    return current_employee

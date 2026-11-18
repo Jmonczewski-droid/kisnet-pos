@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_roles
+from app.api.deps import get_db, require_owner
 from app.models import Device, Employee
 from app.schemas.device import DeviceEdit, DeviceIn, PairIn
 from app.services import devices as service
@@ -12,7 +12,7 @@ from app.services.admin import AdminError
 from app.services.tickets import bump_track, tickets_for_track
 
 router = APIRouter()
-admin_only = require_roles("admin")
+admin_only = require_owner  # device management is database management: owner only
 
 
 def _run(action, *args):

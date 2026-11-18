@@ -101,9 +101,9 @@ async def import_menu_route(
     Raises:
         HTTPException: If user is not admin or CSV is invalid
     """
-    # Check if user has admin role
-    if current_employee.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # Replacing the menu is database management: owner only
+    if getattr(current_employee, "access", "team") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
     
     # Get raw body
     body = await request.body()

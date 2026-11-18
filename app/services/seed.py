@@ -36,6 +36,7 @@ def seed_all(session: Session):
                 name=emp_data["name"],
                 role=emp_data["role"],
                 positions=emp_data["role"],
+                access="owner" if emp_data["role"] == "admin" else "team",  # the demo admin is the demo owner
                 ssn_last=emp_data["code"][-1],
                 pin_hash=hash_pin("1234"),
                 location_id=1,

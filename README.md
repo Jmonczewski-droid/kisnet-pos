@@ -24,7 +24,8 @@ Every employee clocks in with their own code and PIN and lands on the screen for
 
 - **Accurate money:** all prices and totals are stored in whole cents, so there are no rounding errors in sales reports.
 - **Price snapshots:** each item's name, price, and recipe are saved at the moment of sale, so changing the menu never rewrites past sales.
-- **Secure logins:** employee PINs are hashed (PBKDF2), never stored as plain text.
+- **Secure logins:** employee PINs are hashed (PBKDF2), never stored as plain text. Employees set their own PIN, repeated wrong guesses lock the sign-in, and the owner can add two-step sign-in with an authenticator app.
+- **Three access levels:** Owner, Manager and Team Member, so only the owner can open the employee database.
 - **Food-usage reporting:** recipes are stored with ingredient quantities, so sales turn directly into a food-usage report, the same way a manager tracks food cost.
 - **Labor tracking:** clock-in/out, weekly hours per employee, and an admin view of everyone's hours.
 - **Multi-location ready:** records carry a location ID so the system can grow beyond one store.
@@ -37,7 +38,7 @@ Every employee clocks in with their own code and PIN and lands on the screen for
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic migrations, Pydantic
 - **Database:** SQLite by default; PostgreSQL can be configured through a SQLAlchemy URL (not yet tested)
 - **Front end:** plain HTML, CSS, and JavaScript, with no build step
-- **Testing:** 124 automated tests with pytest, including an end-to-end acceptance test of the full workflow through the HTTP API
+- **Testing:** 141 automated tests with pytest, including an end-to-end acceptance test of the full workflow through the HTTP API
 
 ## How it was built
 
@@ -75,9 +76,9 @@ Open http://localhost:8000 and clock in with a seed code and PIN.
 | SRV1  | Michael Brooks | Server        |
 | KIT1  | Carlos Diaz    | Kitchen       |
 | BAR1  | Jessica Moore  | Bar           |
-| ADM1  | Linda Park     | Admin         |
+| ADM1  | Linda Park     | Admin (Owner) |
 
-Every seed PIN is `1234`.
+Every seed PIN is `1234`. This roster is a demo: see "Access levels and going live" before real use.
 
 ## Tests
 
@@ -96,9 +97,33 @@ scenario from the requirements (A11) through the HTTP API.
 4. **Clearing a table:** Send to Payment closes the party and completes its open order. Servers do this for their own tables, bartenders for bar seats, hosts for tables, and admins for any seat. Payment is assumed accepted; this is the hook for later payment integration.
 5. **Bar tickets:** drink items appear as a ticket list on the Bar screen, alongside the BAR1–BAR10 seat circles.
 
+## Access levels and going live
+
+Every employee card has an access level, separate from the stations they work:
+
+| Level | Can do |
+|---|---|
+| **Owner** | Everything, including database management: the employee database, recipes, menu import, devices. |
+| **Manager** | Runs the restaurant: Command Center, reports, daily summary, end of day, time cards, every station. No database management. |
+| **Team Member** | Works the stations on their card (Host, Server, Bar, Kitchen) and sees their own time card. |
+
+- **Employees protect their own PIN.** The PIN on a new card, or one the owner resets, is a starter PIN: the
+  first time it is used the employee must replace it with one only they know. PINs are stored hashed, so
+  nobody, including the owner, can read them.
+- **Lockout.** Five wrong PINs (or authenticator codes) in a row lock that sign-in for five minutes. The owner
+  can unlock it sooner by issuing a new starter PIN.
+- **Owner two-step sign-in.** Under System > Owner Security the owner can require a 6-digit code from an
+  authenticator app as well as the PIN. It uses the open TOTP standard, so any app works, including the
+  open-source Aegis, 2FAS and Ente Auth. If the phone is lost, run
+  `venv/bin/python -m app.cli reset-two-step <CODE>` on the server.
+- **There is always an owner.** The last owner cannot be demoted, deactivated or archived.
+
+To go live with a real business: run `venv/bin/python -m app.cli create-owner "Your Name"`, sign in with the
+code it prints, turn on two-step sign-in, create a card for each employee, then archive the demo roster.
+
 ## Device management
 
-Admin > System > **Device Management** is where printers and screens are connected.
+Owner > System > **Device Management** is where printers and screens are connected.
 
 - **Printers** are network receipt/kitchen printers (ESC/POS on port 9100). Give each one a name, its IP
   address, and what it prints: any of the Bar, Apps, Hot and Cold ticket tracks, and/or guest receipts.
@@ -122,14 +147,15 @@ removed items shown as `VOID` until bumped, and the `reset-db` command. Not adop
 
 Base path `/api/v1`. Interactive docs at `/docs`.
 
-- `auth`: `POST /auth/clock-in`, `POST /auth/clock-out`, `GET /auth/me`
+- `auth`: `POST /auth/clock-in`, `POST /auth/login`, `POST /auth/clock-out`, `GET /auth/me`, `POST /auth/change-pin`,
+  `GET /auth/totp`, `POST /auth/totp/setup|enable|disable` (owner two-step sign-in)
 - `seats`, `parties`: `GET /seats`, `GET|POST /parties`, `GET /parties/{id}`, `POST /parties/{id}/close`
 - `orders`: `POST /parties/{id}/items`, `PATCH|DELETE /order-items/{id}`, `POST /parties/{id}/complete`
 - `tickets`: `GET /tickets?track=appetizers|hot|cold|bar`, `POST /tickets/{order_id}/{track}/bump`
 - `menu`: `GET /menu`, `GET /menu/export`, `POST /menu/import` (raw CSV body, admin)
 - `timecard`: `GET /timecard?week=` (own entries and hours for the week; defaults to this week in business time), `GET /timecard/summary?week=` (admin: every employee's hours that week)
 - `admin`: `GET /employees?role=`, `GET /admin/on-clock`, `POST /admin/clock-out/{employee_id}`
-- `devices` (admin): `GET|POST /admin/devices`, `PATCH /admin/devices/{id}`,
+- `devices` (owner): `GET|POST /admin/devices`, `PATCH /admin/devices/{id}`,
   `POST /admin/devices/{id}/deactivate|reactivate|archive|pairing-code|unpair|test`, `GET /admin/receipt-preview`,
   `GET /admin/server-address`
 - `devices` (a paired monitor, using its own token): `POST /devices/pair`, `GET /devices/me`, `GET /devices/tickets`,
@@ -149,7 +175,7 @@ app/
   seed/menu.csv   seed menu with generic recipes (placeholders to review)
   static/     front end (index.html, app.js, styles.css)
   templates/receipt.txt   guest receipt layout (edit this)
-alembic/      migrations (0001_initial through 0004_devices)
+alembic/      migrations (0001_initial through 0005_access_levels)
 tests/
 ```
 

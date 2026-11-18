@@ -559,3 +559,10 @@ td { border-color: var(--parchment-dark) !important; }
 .form-group label.checkbox-row { display: flex; font-weight: normal; }
 .form-group .checkbox-row input { width: auto; margin: 0; flex: none; }
 @media (max-width: 480px) { .receipt-preview { font-size: 11px; padding: 10px; } }
+
+/* Owner security */
+.qr-box img { width: 220px; max-width: 100%; height: auto; background: #fff; padding: 6px; border: 1px solid #bbb; }
+.secret-key { font-size: 16px; letter-spacing: 1px; word-break: break-all; }
+.setup-steps { padding-left: 20px; }
+.setup-steps li { margin-bottom: 14px; }
+.form-group small { display: block; margin-top: 4px; }
