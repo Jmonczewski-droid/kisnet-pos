@@ -14,7 +14,7 @@ KISnet-POS is my answer to that. I wrote the workflow document first, as an oper
 |---|---|
 | **Host** | A 4x4 floor map (tables A1-D4). Creates a party with table, assigned server, name, and party size, which starts the table's timer. |
 | **Server** | A drop-down of only their assigned tables. Places and edits orders; drinks route to the bar and food routes to the kitchen automatically. |
-| **Bar** | Ten bar seats (Z1-Z10) plus a live drink-ticket list. Bartenders seat their own guests and ring their own orders. |
+| **Bar** | Ten bar seats (BAR1-BAR10) plus a live drink-ticket list. Bartenders seat their own guests and ring their own orders. |
 | **Kitchen** | Three ticket tracks (Appetizers, Hot, Cold) with running ticket times and table numbers. Changes after send are flagged `CHANGED`/`NEW`; removed items show as `VOID`. |
 | **Admin** | A Command Center showing who is on the clock, plus menu and recipe management, employee lifecycle (edit, deactivate, archive), time cards, and daily sales and food-usage reports. |
 
@@ -84,11 +84,11 @@ scenario from the requirements (A11) through the HTTP API.
 
 ## Decisions on the open points (requirements A10)
 
-1. **Party system shared with Bar and Server**
+1. **Party system shared with Bar and Server:** Host, Server, and Bar all work from the same party record, so each seat has one party and one open order whichever station opened it.
 2. **Completing an order:** the server (or bartender for bar seats, or admin) marks it complete on their screen.
 3. **Kitchen finish:** Bump clears a whole ticket (one order, one track) at once.
-4. **Clearing a table:** the host (or bartender for Z seats, or admin) closes the party once its order is complete.
-5. **Bar tickets:** drink items appear as a ticket list on the Bar screen, alongside the Z1–Z10 circles.
+4. **Clearing a table:** Send to Payment closes the party and completes its open order. Servers do this for their own tables, bartenders for bar seats, hosts for tables, and admins for any seat. Payment is assumed accepted; this is the hook for later payment integration.
+5. **Bar tickets:** drink items appear as a ticket list on the Bar screen, alongside the BAR1–BAR10 seat circles.
 
 ## Section B suggestions adopted
 
@@ -121,7 +121,7 @@ app/
   services/   business rules (orders, parties, tickets, reports, menu import, seed)
   seed/menu.csv   seed menu with generic recipes (placeholders to review)
   static/     front end (index.html, app.js, styles.css)
-alembic/      migrations (0001_initial)
+alembic/      migrations (0001_initial through 0003_archive_status)
 tests/
 .qwen/        task queue and conventions used to generate the code
 ```
