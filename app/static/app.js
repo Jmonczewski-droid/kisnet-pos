@@ -590,10 +590,10 @@ function renderPartyDetails(root, party, role) {
                 <div class="card" id="party-details-card">
                     ${isServerScreen ? `<button id="back-to-tables" class="btn-large">${isBarScreen ? 'Back to bar seats' : 'Back to my tables'}</button>` : ''}
                     <h2>Party Details</h2>
-                    <p><strong>Seat:</strong> ${party.seat}</p>
-                    <p><strong>Party Name:</strong> ${party.party_name}</p>
+                    <p><strong>Seat:</strong> ${escapeHtml(party.seat)}</p>
+                    <p><strong>Party Name:</strong> ${escapeHtml(party.party_name)}</p>
                     <p><strong>Party Size:</strong> ${party.party_size}</p>
-                    <p><strong>Server:</strong> ${party.server_name || 'None'}</p>
+                    <p><strong>Server:</strong> ${escapeHtml(party.server_name || 'None')}</p>
                     <p><strong>Started:</strong> ${fmtDate(party.opened_at)}</p>
                     <p><strong>Elapsed:</strong> ${fmtElapsed(party.opened_at)} minutes</p>
                     
@@ -608,8 +608,8 @@ function renderPartyDetails(root, party, role) {
                                 const statusText = item.voided ? '(VOIDED)' : item.changed ? '(CHANGED)' : '';
                                 return `
                                     <div class="order-item ${statusClass}">
-                                        <p><strong>${item.name}</strong> - Qty: ${item.qty} 
-                                            ${item.notes ? ` | Notes: ${item.notes}` : ''}
+                                        <p><strong>${escapeHtml(item.name)}</strong> - Qty: ${item.qty} 
+                                            ${item.notes ? ` | Notes: ${escapeHtml(item.notes)}` : ''}
                                             ${statusText}
                                         </p>
                                         <p>Price: $${(item.unit_price_cents / 100).toFixed(2)}</p>
@@ -623,17 +623,17 @@ function renderPartyDetails(root, party, role) {
                         <h3>Menu Items</h3>
                         <div id="menu-category-list">
                             ${Object.entries(menuCategories).map(([category, items]) => `
-                                <h4>${category.charAt(0).toUpperCase() + category.slice(1)}</h4>
+                                <h4>${escapeHtml(category.charAt(0).toUpperCase() + category.slice(1))}</h4>
                                 <div class="grid-buttons">
                                     ${items.map(item => `
                                         <button 
                                             class="menu-item-btn"
                                             data-item-id="${item.id}"
-                                            data-category="${item.category}"
-                                            data-name="${item.name}"
+                                            data-category="${escapeHtml(item.category)}"
+                                            data-name="${escapeHtml(item.name)}"
                                             data-price="${item.price_cents}"
                                         >
-                                            ${item.name}<br>
+                                            ${escapeHtml(item.name)}<br>
                                             $${(item.price_cents / 100).toFixed(2)}
                                         </button>
                                     `).join('')}
@@ -665,7 +665,7 @@ function renderPartyDetails(root, party, role) {
             }
         })
         .catch(error => {
-            root.innerHTML = `<div class="card"><h2>Error</h2><p>${error.message}</p></div>`;
+            root.innerHTML = `<div class="card"><h2>Error</h2><p>${escapeHtml(error.message)}</p></div>`;
             console.error('Error loading menu items:', error);
         });
 }
@@ -736,7 +736,7 @@ function confirmClockIn(preview, credentials) {
         ? `<div class="form-group">
                <label for="clock-position">Clocking in as</label>
                <select id="clock-position">
-                   ${positions.map(role => `<option value="${role}">${escapeHtml(roleLabel(role))}</option>`).join('')}
+                   ${positions.map(role => `<option value="${escapeHtml(role)}">${escapeHtml(roleLabel(role))}</option>`).join('')}
                </select>
            </div>`
         : `<p><strong>Position:</strong> ${escapeHtml(roleLabel(positions[0]))}</p>`;
@@ -952,7 +952,7 @@ function showEmployeeForm(employee) {
         <fieldset class="form-group">
             <legend>Positions (tick every job this person can do)</legend>
             ${POSITION_OPTIONS.map(role => `
-                <label class="checkbox-row"><input type="checkbox" class="emp-position" value="${role}"${held.includes(role) ? ' checked' : ''}> ${roleLabel(role)}</label>`).join('')}
+                <label class="checkbox-row"><input type="checkbox" class="emp-position" value="${escapeHtml(role)}"${held.includes(role) ? ' checked' : ''}> ${escapeHtml(roleLabel(role))}</label>`).join('')}
         </fieldset>
         <div class="form-group"><label for="emp-pin">${editing ? 'PIN (leave blank to keep)' : 'PIN (4 digits or more)'}</label>
             <input type="password" id="emp-pin" value="${editing ? '' : '1234'}"></div>
@@ -1164,7 +1164,7 @@ function loadSummary() {
         const money = cents => `$${(cents / 100).toFixed(2)}`;
         const itemTable = (title, rows) => `
             <div>
-                <h3>${title}</h3>
+                <h3>${escapeHtml(title)}</h3>
                 <table class="data-table">
                     <thead><tr><th>Item</th><th>Sold</th><th>Sales</th></tr></thead>
                     <tbody>${rows.length === 0 ? '<tr><td colspan="3">None sold</td></tr>' : rows.map(row => `
@@ -1298,8 +1298,8 @@ function renderReports(root) {
                             <tbody>
                                 ${data.rows.map(row => `
                                     <tr>
-                                        <td>${row.name}</td>
-                                        <td>${row.category}</td>
+                                        <td>${escapeHtml(row.name)}</td>
+                                        <td>${escapeHtml(row.category)}</td>
                                         <td>${row.qty}</td>
                                         <td>$${(row.sales_cents / 100).toFixed(2)}</td>
                                     </tr>
@@ -1348,8 +1348,8 @@ function renderReports(root) {
                             <tbody>
                                 ${data.rows.map(row => `
                                     <tr>
-                                        <td>${row.ingredient}</td>
-                                        <td>${row.unit}</td>
+                                        <td>${escapeHtml(row.ingredient)}</td>
+                                        <td>${escapeHtml(row.unit)}</td>
                                         <td>${parseFloat(row.qty).toFixed(2)}</td>
                                     </tr>
                                 `).join('')}
@@ -1416,7 +1416,7 @@ function renderReports(root) {
                 document.getElementById('import-status').innerHTML = `
                     <div class="card">
                         <h3>Import Failed</h3>
-                        <p>Error: ${error.message}</p>
+                        <p>Error: ${escapeHtml(error.message)}</p>
                     </div>
                 `;
                 console.error('Error importing menu:', error);
@@ -1462,8 +1462,8 @@ function renderHost(root) {
                     <h2>Host Station - Tables</h2>
                     <div class="grid-buttons host-grid">
                         ${tables.map(seat => `
-                            <button class="button-card" data-seat="${seat.seat}">
-                                ${seat.seat}<br>
+                            <button class="button-card" data-seat="${escapeHtml(seat.seat)}">
+                                ${escapeHtml(seat.seat)}<br>
                                 ${seat.party ? escapeHtml(seat.party.party_name) + '<br>' + fmtElapsed(seat.party.opened_at) : 'Empty'}
                             </button>
                         `).join('')}
@@ -1576,9 +1576,9 @@ function renderServer(root) {
                     <h2>My Tables</h2>
                     <div class="grid-buttons" id="server-tables-grid">
                         ${openParties.map(party => `
-                            <button class="button-card" data-party-id="${party.id}" data-seat="${party.seat}"
+                            <button class="button-card" data-party-id="${party.id}" data-seat="${escapeHtml(party.seat)}"
                                     data-name="${escapeHtml(party.party_name)}">
-                                ${party.seat}<br>${escapeHtml(party.party_name)}<br>${fmtElapsed(party.opened_at)}
+                                ${escapeHtml(party.seat)}<br>${escapeHtml(party.party_name)}<br>${fmtElapsed(party.opened_at)}
                             </button>`).join('')}
                     </div>
                     ${openParties.length === 0 ? '<p>No tables assigned to you right now.</p>' : ''}
@@ -1593,7 +1593,7 @@ function renderServer(root) {
             });
         })
         .catch(error => {
-            root.innerHTML = `<div class="card"><h2>Error</h2><p>${error.message}</p></div>`;
+            root.innerHTML = `<div class="card"><h2>Error</h2><p>${escapeHtml(error.message)}</p></div>`;
             console.error('Error loading open parties:', error);
         });
 }
@@ -1612,10 +1612,10 @@ function renderBar(root) {
                         ${barSeats.map(seat => `
                             <button 
                                 class="button-card"
-                                data-seat="${seat.seat}" 
+                                data-seat="${escapeHtml(seat.seat)}" 
                                 data-occupied="${!!seat.party}"
                             >
-                                ${seat.seat}<br>
+                                ${escapeHtml(seat.seat)}<br>
                                 ${seat.party ? escapeHtml(seat.party.party_name) + '<br>' + fmtElapsed(seat.party.opened_at) : 'Empty'}
                             </button>
                         `).join('')}
@@ -1640,7 +1640,7 @@ function renderBar(root) {
             
         })
         .catch(error => {
-            root.innerHTML = `<div class="card"><h2>Error</h2><p>${error.message}</p></div>`;
+            root.innerHTML = `<div class="card"><h2>Error</h2><p>${escapeHtml(error.message)}</p></div>`;
             console.error('Error loading bar seats:', error);
         });
 }
@@ -1772,8 +1772,8 @@ function loadBarTickets() {
                 <div class="grid-buttons">
                     ${tickets.map(ticket => `
                         <div class="card ticket-card">
-                            <p><strong>Seat:</strong> ${ticket.seat}</p>
-                            <p><strong>Party:</strong> ${ticket.party_name}</p>
+                            <p><strong>Seat:</strong> ${escapeHtml(ticket.seat)}</p>
+                            <p><strong>Party:</strong> ${escapeHtml(ticket.party_name)}</p>
                             <p><strong>Opened:</strong> ${fmtElapsed(ticket.opened_at)}</p>
                             <button class="btn-large bump-btn" data-order-id="${ticket.order_id}">Bump</button>
                         </div>
@@ -1798,7 +1798,7 @@ function loadBarTickets() {
             });
         })
         .catch(error => {
-            barTicketsContainer.innerHTML = `<p>Error loading tickets: ${error.message}</p>`;
+            barTicketsContainer.innerHTML = `<p>Error loading tickets: ${escapeHtml(error.message)}</p>`;
             console.error('Error loading bar tickets:', error);
         });
 }
@@ -1851,8 +1851,8 @@ function loadKitchenTickets(track) {
             container.innerHTML = `
                     ${tickets.map(ticket => `
                         <div class="card ticket-card">
-                            <p><strong>Seat:</strong> ${ticket.seat}</p>
-                            <p><strong>Party:</strong> ${ticket.party_name}</p>
+                            <p><strong>Seat:</strong> ${escapeHtml(ticket.seat)}</p>
+                            <p><strong>Party:</strong> ${escapeHtml(ticket.party_name)}</p>
                             <p><strong>Opened:</strong> ${fmtElapsed(ticket.opened_at)}</p>
                             <div class="order-items">
                                 ${ticket.items.map(item => {
@@ -1860,8 +1860,8 @@ function loadKitchenTickets(track) {
                                     const statusClass = item.voided ? 'voided-badge' : item.changed ? 'changed-badge' : 'new-badge';
                                     return `
                                         <div class="order-item-card">
-                                            <p><strong>${item.name}</strong> - Qty: ${item.qty} 
-                                                ${item.notes ? ` | Notes: ${item.notes}` : ''}
+                                            <p><strong>${escapeHtml(item.name)}</strong> - Qty: ${item.qty} 
+                                                ${item.notes ? ` | Notes: ${escapeHtml(item.notes)}` : ''}
                                             </p>
                                             <span class="${statusClass}">${statusBadge}</span>
                                             <p>Price: $${(item.unit_price_cents / 100).toFixed(2)}</p>
@@ -1892,7 +1892,7 @@ function loadKitchenTickets(track) {
             });
         })
         .catch(error => {
-            container.innerHTML = `<p>Error loading ${track} tickets: ${error.message}</p>`;
+            container.innerHTML = `<p>Error loading ${escapeHtml(track)} tickets: ${escapeHtml(error.message)}</p>`;
             console.error(`Error loading ${track} tickets:`, error);
         });
 }
@@ -2090,7 +2090,7 @@ function renderNavBar() {
         const canToggle = state.employee.role === 'bartender' || state.employee.role === 'admin';
         const onSeats = window.location.hash.slice(1) === '/barseats';
         topBar.innerHTML = `
-            <div>Welcome, ${state.employee.name} (${state.employee.role})</div>
+            <div>Welcome, ${escapeHtml(state.employee.name)} (${escapeHtml(state.employee.role)})</div>
             <div class="top-actions">
                 ${canToggle ? `<button id="view-toggle" class="btn-large">${onSeats ? 'Drink Queue' : 'Bar Seats'}</button>` : ''}
                 <button id="logout-btn" class="btn-large">Logout</button>
